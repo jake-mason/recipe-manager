@@ -1,0 +1,25 @@
+services:
+  recipe-parser-app:
+    build: .
+    volumes:
+      - ./data:/app/data
+      # Optional: set INPUT_DIR when using run_docker.sh for files outside ./data
+      - ${INPUT_DIR:-./data}:/input:ro
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+    depends_on:
+      - ollama
+    stdin_open: true
+    tty: true
+
+  ollama:
+    image: ollama/ollama:0.7.0
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:

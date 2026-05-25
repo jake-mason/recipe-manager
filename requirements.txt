@@ -1,0 +1,7 @@
+pymupdf
+ollama
+pydantic
+python-dotenv
+requests
+trafilatura
+beautifulsoup4
