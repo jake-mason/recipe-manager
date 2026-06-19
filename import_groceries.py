@@ -100,18 +100,18 @@ def _run_osascript(script: str) -> str:
 
 
 def _verify_list_exists(list_name: str) -> None:
-    script = f'''
+    script = f"""
     tell application "Reminders"
         if not (exists list "{_applescript_escape(list_name)}") then
             error "Reminders list not found: {list_name}"
         end if
     end tell
-    '''
+    """
     _run_osascript(script)
 
 
 def get_existing_reminder_names(list_name: str) -> Set[str]:
-    script = f'''
+    script = f"""
     tell application "Reminders"
         tell list "{_applescript_escape(list_name)}"
             set out to ""
@@ -121,7 +121,7 @@ def get_existing_reminder_names(list_name: str) -> Set[str]:
             return out
         end tell
     end tell
-    '''
+    """
     output = _run_osascript(script)
     if not output:
         return set()
@@ -167,13 +167,11 @@ def add_to_reminders(
     note_escaped = _applescript_escape(note) if note else ""
 
     if note:
-        create_line = (
-            f'make new reminder with properties {{name:itemName, body:"{note_escaped}"}}'
-        )
+        create_line = f'make new reminder with properties {{name:itemName, body:"{note_escaped}"}}'
     else:
         create_line = "make new reminder with properties {name:itemName}"
 
-    script = f'''
+    script = f"""
     tell application "Reminders"
         tell list "{_applescript_escape(list_name)}"
             repeat with itemName in {{{items_literal}}}
@@ -181,7 +179,7 @@ def add_to_reminders(
             end repeat
         end tell
     end tell
-    '''
+    """
 
     _run_osascript(script)
     logging.info("Added %d item(s) to '%s'.", len(to_add), list_name)

@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY parse_recipe.py .
 
-ENTRYPOINT ["bash"]
+ENTRYPOINT ["python", "parse_recipe.py"]

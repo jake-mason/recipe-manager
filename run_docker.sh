@@ -77,8 +77,22 @@ docker compose exec ollama ollama pull ${OLLAMA_MODEL}
 # Run the parser app and capture its output to the terminal
 # Using --build --no-cache to ensure it is always built freshly
 echo "Building and running recipe parser..."
-docker compose run --rm --build recipe-parser-app "${PARSER_COMMAND[@]}"
+# #region agent log
+DEBUG_LOG="${PROJECT_DIR}/.cursor/debug-3bb3db.log"
+mkdir -p "$(dirname "$DEBUG_LOG")"
+printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"run_docker.sh:docker-run","message":"docker compose command","data":{"parser_command":"%s","recipe_name":"%s","input_dir":"%s","filename":"%s"},"timestamp":%s}\n' \
+    "$(printf '%s' "${PARSER_COMMAND[*]}" | sed 's/"/\\"/g')" \
+    "$(printf '%s' "$RECIPE_NAME" | sed 's/"/\\"/g')" \
+    "$(printf '%s' "$INPUT_DIR" | sed 's/"/\\"/g')" \
+    "$(printf '%s' "$FILENAME" | sed 's/"/\\"/g')" \
+    "$(($(date +%s) * 1000))" >> "$DEBUG_LOG"
+# #endregion
+docker compose run --rm --build -e "RECIPE_NAME=${RECIPE_NAME}" recipe-parser-app "${PARSER_COMMAND[@]}"
 PARSE_EXIT=$?
+# #region agent log
+printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"run_docker.sh:docker-exit","message":"docker compose exit","data":{"exit_code":%s},"timestamp":%s}\n' \
+    "$PARSE_EXIT" "$(($(date +%s) * 1000))" >> "$DEBUG_LOG"
+# #endregion
 
 if [ "$PARSE_EXIT" -ne 0 ]; then
     echo "Recipe parsing failed (exit $PARSE_EXIT)."

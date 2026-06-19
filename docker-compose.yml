@@ -1,5 +1,5 @@
 services:
-  recipe-parser-app:
+  recipe-manager-app:
     build: .
     volumes:
       - ./data:/app/data
