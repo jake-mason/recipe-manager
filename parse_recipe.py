@@ -260,6 +260,12 @@ def load_recipe_source(source: str) -> Dict[str, Any]:
     if not input_path.exists():
         raise FileNotFoundError(f"Input '{source}' does not exist.")
 
+    if input_path.suffix.lower() in (".txt", ".md"):
+        text = input_path.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            raise ValueError(f"File '{source}' is empty.")
+        return {"images": [], "text": text}
+
     return {"images": get_images_from_file(input_path), "text": None}
 
 

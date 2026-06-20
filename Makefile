@@ -1,13 +1,9 @@
 .PHONY: docker-cleanup docker-build docker-run
 
 docker-cleanup:
-	@echo "Stopping and removing all containers, networks, and volumes associated with this project..."
-	docker compose down -v --remove-orphans
-	@echo "Removing the built recipe-parser image..."
-	docker rmi recipe-manager-recipe-parser-app:latest || true
-	@echo "Pruning unused builder cache..."
-	docker builder prune -f
-	@echo "Cleanup complete."
+	docker system prune -a --volumes --force
+	docker rm -f $(docker ps -aq)
+	docker rmi -f $(docker images -q)
 
 APP_NAME := recipe-manager-app
 
