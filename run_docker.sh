@@ -55,24 +55,26 @@ if [ -f "${PROJECT_DIR}/.env" ]; then
     set +a
 fi
 
-echo "Starting environment and pulling model if needed (this may take a while the first time)..."
+if [ "${USE_ANTHROPIC:-false}" != "true" ]; then
+    echo "Starting environment and pulling model if needed (this may take a while the first time)..."
 
-# Ensure Ollama is running in the background
-docker compose up -d ollama
+    # Ensure Ollama is running in the background
+    docker compose --profile ollama up -d ollama
 
-# Print the installed Ollama version
-echo "Ollama version running in container:"
-docker compose exec ollama ollama --version
+    # Print the installed Ollama version
+    echo "Ollama version running in container:"
+    docker compose exec ollama ollama --version
 
-# Wait for Ollama to be ready
-echo "Waiting for Ollama to start..."
-sleep 5
+    # Wait for Ollama to be ready
+    echo "Waiting for Ollama to start..."
+    sleep 5
 
-# Pull the specified model (this takes time initially, but is fast if already downloaded)
-# Defaulting to qwen2.5vl:3b if OLLAMA_MODEL is not set in .env
-OLLAMA_MODEL=${OLLAMA_MODEL:-"qwen2.5vl:3b"}
-echo "Ensuring ${OLLAMA_MODEL} is downloaded..."
-docker compose exec ollama ollama pull ${OLLAMA_MODEL}
+    # Pull the specified model (this takes time initially, but is fast if already downloaded)
+    # Defaulting to qwen2.5vl:3b if OLLAMA_MODEL is not set in .env
+    OLLAMA_MODEL=${OLLAMA_MODEL:-"qwen2.5vl:3b"}
+    echo "Ensuring ${OLLAMA_MODEL} is downloaded..."
+    docker compose exec ollama ollama pull ${OLLAMA_MODEL}
+fi
 
 # Run the parser app and capture its output to the terminal
 # Using --build --no-cache to ensure it is always built freshly
@@ -87,7 +89,7 @@ printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"
     "$(printf '%s' "$FILENAME" | sed 's/"/\\"/g')" \
     "$(($(date +%s) * 1000))" >> "$DEBUG_LOG"
 # #endregion
-docker compose run --rm --build -e "RECIPE_NAME=${RECIPE_NAME}" recipe-parser-app "${PARSER_COMMAND[@]}"
+docker compose run --rm --build -e "RECIPE_NAME=${RECIPE_NAME}" recipe-manager-app "${PARSER_COMMAND[@]}"
 PARSE_EXIT=$?
 # #region agent log
 printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"run_docker.sh:docker-exit","message":"docker compose exit","data":{"exit_code":%s},"timestamp":%s}\n' \

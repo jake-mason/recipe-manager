@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import base64
+
 import fitz  # PyMuPDF
 import ollama
 import requests
@@ -30,10 +32,17 @@ FETCH_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/pdf,image/*,*/*;q=0.8",
 }
 
-# We'll use Pydantic to enforce the JSON structure from Ollama
+class Ingredient(BaseModel):
+    name: str = Field(description="Base ingredient name, normalized (e.g., 'potato', 'chicken breast', 'olive oil')")
+    quantity: str = Field(default="", description="Amount and unit as one string (e.g., '2 lbs', '1/2 cup', '3 cloves', 'to taste'). Empty string if unspecified.")
+    prep_note: str = Field(default="", description="Preparation instruction for this ingredient (e.g., 'diced', 'finely chopped', 'room temperature'). Empty string if none.")
+    section: str = Field(default="", description="Ingredient group/section header if the recipe groups ingredients (e.g., 'sauce', 'marinade'). Empty string if ungrouped.")
+    optional: bool = Field(default=False, description="True if the recipe explicitly marks this ingredient as optional.")
+
+
 class RecipeStructure(BaseModel):
     recipe_name_slug: str = Field(description="A concise, URL-friendly, all-lowercase name for this recipe (e.g., 'tuscan-chicken'). Max 4 words.")
-    ingredients: str = Field(description="The full markdown text for the ingredients section")
+    ingredients: List[Ingredient] = Field(description="Structured list of ingredients.")
     steps: str = Field(description="The full markdown text for the steps/instructions section")
 
 
@@ -175,24 +184,25 @@ def _instruction_lines(instructions: Any) -> List[str]:
     return lines
 
 
-def recipe_from_json_ld(recipe: Dict[str, Any]) -> Tuple[str, str, str]:
-    """Format a schema.org Recipe dict into slug, ingredients markdown, steps markdown."""
+def recipe_from_json_ld(recipe: Dict[str, Any]) -> Tuple[str, List[Ingredient], str]:
+    """Format a schema.org Recipe dict into slug, structured ingredients, steps markdown."""
     name = recipe.get("name") or recipe.get("headline") or "unknown-recipe"
     slug = slugify(str(name))
 
     raw_ingredients = recipe.get("recipeIngredient") or recipe.get("ingredients") or []
     if isinstance(raw_ingredients, str):
-        ingredient_lines = [line.strip() for line in raw_ingredients.splitlines() if line.strip()]
+        raw_lines = [line.strip() for line in raw_ingredients.splitlines() if line.strip()]
     else:
-        ingredient_lines = [str(i).strip() for i in raw_ingredients if str(i).strip()]
+        raw_lines = [str(i).strip() for i in raw_ingredients if str(i).strip()]
+
+    # JSON-LD strings are already human-readable (e.g. "1 cup flour, sifted") — store as-is in name.
+    ingredients = [Ingredient(name=line) for line in raw_lines]
 
     instructions = recipe.get("recipeInstructions") or []
     step_lines = _instruction_lines(instructions)
-
-    ingredients_md = "\n".join(f"- {line}" for line in ingredient_lines) if ingredient_lines else ""
     steps_md = "\n".join(f"{i}. {line}" for i, line in enumerate(step_lines, 1)) if step_lines else ""
 
-    return slug, ingredients_md, steps_md
+    return slug, ingredients, steps_md
 
 
 def extract_html_text(html: str, url: str) -> str:
@@ -278,46 +288,32 @@ def _ollama_client():
     return ollama.Client(host=ollama_host)
 
 
+def _use_anthropic() -> bool:
+    val = os.environ.get("USE_ANTHROPIC", "").strip().lower()
+    return val in ("1", "true", "yes")
+
+
 def parse_with_llm(
     images: Optional[List[bytes]] = None,
     text: Optional[str] = None,
     model_name: Optional[str] = None,
-) -> Tuple[Optional[str], str, str]:
-    """Extract recipe fields using Ollama from images and/or page text."""
+) -> Tuple[Optional[str], List[Ingredient], str]:
+    """Extract recipe fields from images and/or page text.
+
+    Dispatches to the Anthropic API when USE_ANTHROPIC=true, otherwise uses Ollama.
+    """
     if not images and not text:
         logging.error("No images or text to process.")
-        return None, "", ""
+        return None, [], ""
+
+    if _use_anthropic():
+        return parse_with_claude(images=images, text=text)
 
     if images:
-        prompt = """
-    You are an expert recipe parser. I have provided you with images of a recipe document.
-    Your job is to identify and extract EXACTLY three distinct fields from this recipe:
-    1. A concise, URL-friendly, all-lowercase name for this recipe (e.g., 'tuscan-chicken', 'classic-lasagna'). Max 4 words.
-    2. The ingredients list
-    3. The preparation steps / instructions
-
-    Return the final output exactly as requested by the schema. Do not add conversational text.
-    Preserve as much of the original formatting (like bullet points and bolding) as possible
-    within the ingredients and steps using markdown.
-    """
-        message: Dict[str, Any] = {"role": "user", "content": prompt, "images": images}
+        message: Dict[str, Any] = {"role": "user", "content": _IMAGE_PROMPT, "images": images}
         log_label = "document images"
     else:
-        prompt = """
-    You are an expert recipe parser. I have provided the text of a recipe web page (often a print-friendly view).
-    Extract EXACTLY three distinct fields:
-    1. A concise, URL-friendly, all-lowercase name for this recipe (e.g., 'tuscan-chicken', 'classic-lasagna'). Max 4 words.
-    2. The ingredients list
-    3. The preparation steps / instructions
-
-    Return the final output exactly as requested by the schema. Do not add conversational text.
-    Preserve bullet points and markdown formatting where appropriate.
-    Ignore navigation, ads, comments, and other non-recipe content.
-
-    Recipe page text:
-    ---
-    """
-        message = {"role": "user", "content": prompt + (text or "")}
+        message = {"role": "user", "content": _TEXT_PROMPT + (text or "")}
         log_label = "page text"
 
     try:
@@ -336,33 +332,141 @@ def parse_with_llm(
 
         result_json = response.message.content
         parsed_data = json.loads(result_json)
+        ingredients = [Ingredient(**i) for i in parsed_data.get("ingredients", [])]
 
         return (
             parsed_data.get("recipe_name_slug", "unknown-recipe"),
-            parsed_data.get("ingredients", ""),
+            ingredients,
             parsed_data.get("steps", ""),
         )
 
     except Exception as e:
         logging.error("Error communicating with Ollama: %s", e)
-        return None, "", ""
+        return None, [], ""
+
+
+_INGREDIENT_FORMAT = """
+For each ingredient extract:
+- name: the base ingredient, normalized (e.g., "potato", "chicken breast", "olive oil")
+- quantity: amount and unit as one string (e.g., "2 lbs", "1/2 cup", "3 cloves", "to taste"). Empty string if unspecified.
+- prep_note: preparation instruction for this ingredient (e.g., "diced", "finely chopped", "room temperature"). Empty string if none.
+- section: group/section header if the recipe clusters ingredients under headings (e.g., "sauce", "marinade"). Empty string if ungrouped.
+- optional: true only if the recipe explicitly marks this ingredient as optional.
+
+Do not write "juice of one lemon" — instead name="lemon", quantity="1", prep_note="juiced"."""
+
+_IMAGE_PROMPT = f"""You are an expert recipe parser. I have provided you with images of a recipe document.
+Extract EXACTLY three fields:
+1. A concise, URL-friendly, all-lowercase slug for this recipe (e.g., "tuscan-chicken"). Max 4 words.
+2. A structured list of ingredients.
+3. The preparation steps / instructions.
+{_INGREDIENT_FORMAT}
+Format the steps section preserving the original detail and structure using markdown.
+Return the final output exactly as requested by the schema. Do not add conversational text."""
+
+_TEXT_PROMPT = f"""You are an expert recipe parser. I have provided the text of a recipe web page.
+Extract EXACTLY three fields:
+1. A concise, URL-friendly, all-lowercase slug for this recipe (e.g., "tuscan-chicken"). Max 4 words.
+2. A structured list of ingredients.
+3. The preparation steps / instructions.
+{_INGREDIENT_FORMAT}
+Format the steps section preserving the original detail and structure using markdown.
+Ignore navigation, ads, comments, and other non-recipe content.
+Return the final output exactly as requested by the schema. Do not add conversational text.
+
+Recipe page text:
+---
+"""
+
+_EXTRACT_RECIPE_TOOL = {
+    "name": "extract_recipe",
+    "description": "Extract structured recipe data from the provided content.",
+    "input_schema": RecipeStructure.model_json_schema(),
+}
+
+
+def parse_with_claude(
+    images: Optional[List[bytes]] = None,
+    text: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> Tuple[Optional[str], List[Ingredient], str]:
+    """Extract recipe fields using the Anthropic API with forced tool_use for structured output."""
+    try:
+        import anthropic
+    except ImportError:
+        logging.error("anthropic package not installed. Run: pip install anthropic")
+        return None, [], ""
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        logging.error("ANTHROPIC_API_KEY not set.")
+        return None, [], ""
+
+    model = model_name or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    client = anthropic.Anthropic(api_key=api_key)
+
+    if images:
+        content: List[Any] = []
+        for img_bytes in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.standard_b64encode(img_bytes).decode("utf-8"),
+                },
+            })
+        content.append({"type": "text", "text": _IMAGE_PROMPT})
+        log_label = "document images"
+    else:
+        content = [{"type": "text", "text": _TEXT_PROMPT + (text or "")}]
+        log_label = "page text"
+
+    try:
+        logging.info("Sending %s to Claude for extraction (%s)...", log_label, model)
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            tools=[_EXTRACT_RECIPE_TOOL],
+            tool_choice={"type": "tool", "name": "extract_recipe"},
+            messages=[{"role": "user", "content": content}],
+        )
+
+        tool_use_block = next(
+            (block for block in response.content if block.type == "tool_use"),
+            None,
+        )
+        if not tool_use_block:
+            logging.error("Claude did not return a tool_use block.")
+            return None, [], ""
+
+        parsed = tool_use_block.input
+        ingredients = [Ingredient(**i) for i in parsed.get("ingredients", [])]
+        return (
+            parsed.get("recipe_name_slug", "unknown-recipe"),
+            ingredients,
+            parsed.get("steps", ""),
+        )
+
+    except Exception as e:
+        logging.error("Error communicating with Anthropic API: %s", e)
+        return None, [], ""
 
 
 def write_recipe_output(
     data_dir: str,
     final_name: str,
-    ingredients: str,
+    ingredients: List[Ingredient],
     steps: str,
 ) -> Tuple[Path, Path]:
     recipe_dir = Path(os.getcwd()) / data_dir / final_name
     recipe_dir.mkdir(parents=True, exist_ok=True)
 
-    ingredients_file = recipe_dir / "ingredients.md"
+    ingredients_file = recipe_dir / "ingredients.json"
     steps_file = recipe_dir / "steps.md"
 
     with open(ingredients_file, "w", encoding="utf-8") as f:
-        f.write("# Ingredients\n\n")
-        f.write(ingredients if ingredients else "No ingredients found.\n")
+        json.dump([i.model_dump() for i in ingredients], f, indent=2, ensure_ascii=False)
 
     with open(steps_file, "w", encoding="utf-8") as f:
         f.write("# Steps\n\n")
@@ -373,7 +477,7 @@ def write_recipe_output(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse a recipe document or URL into ingredients and steps using local LLMs."
+        description="Parse a recipe document or URL into ingredients and steps using a local or cloud LLM."
     )
     parser.add_argument(
         "input_source",
@@ -397,12 +501,21 @@ def main():
         help=f"The Ollama model to use for vision extraction (default: {default_model})",
     )
     parser.add_argument(
+        "--use-anthropic",
+        action="store_true",
+        default=_use_anthropic(),
+        help="Use the Anthropic API instead of local Ollama (requires ANTHROPIC_API_KEY; also set via USE_ANTHROPIC=true).",
+    )
+    parser.add_argument(
         "--import-groceries",
         action="store_true",
         help="After parsing, import ingredients into macOS Reminders (Groceries list). macOS only.",
     )
 
     args = parser.parse_args()
+
+    if args.use_anthropic:
+        os.environ["USE_ANTHROPIC"] = "true"
 
     try:
         loaded = load_recipe_source(args.input_source)
@@ -440,10 +553,10 @@ def main():
         if sys.platform != "darwin":
             logging.warning("--import-groceries is only supported on macOS; skipping.")
         else:
-            from import_groceries import add_to_reminders, parse_ingredients_md
+            from import_groceries import add_to_reminders, parse_ingredients_json
 
-            items = parse_ingredients_md(ingredients_file)
-            add_to_reminders(items, note=f"from {final_name}")
+            items = parse_ingredients_json(ingredients_file, recipe_name=final_name)
+            add_to_reminders(items)
 
 
 if __name__ == "__main__":

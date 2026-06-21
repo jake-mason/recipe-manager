@@ -18,9 +18,21 @@ Parsing runs in Docker. Reminders import runs on the **Mac host** only (AppleScr
 
 ## Quick start (Docker)
 
+**Step 0 — one-time setup:**
+
 ```bash
-# From the project root — create .env first (see Configuration)
+# 1. Create your .env file (see Configuration below)
+
+# 2. Make the wrapper executable
 chmod +x run_docker.sh
+
+# 3. Build the Docker image
+docker compose build
+```
+
+Then parse a recipe:
+
+```bash
 ./run_docker.sh /path/to/recipe.pdf tuscan-chicken
 ```
 

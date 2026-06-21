@@ -1,7 +1,10 @@
 pymupdf
 ollama
+anthropic
 pydantic
 python-dotenv
 requests
 trafilatura
 beautifulsoup4
+pytest
+pytest-mock

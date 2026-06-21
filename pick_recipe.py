@@ -17,7 +17,7 @@ def find_recipes(data_dir: Path) -> list[str]:
     return sorted(
         d.name
         for d in formatted.iterdir()
-        if d.is_dir() and (d / "ingredients.md").exists()
+        if d.is_dir() and (d / "ingredients.json").exists()
     )
 
 
@@ -115,11 +115,11 @@ def main() -> int:
         print("No recipe selected.")
         return 0
 
-    from import_groceries import add_to_reminders, parse_ingredients_md, resolve_ingredients_file
+    from import_groceries import add_to_reminders, parse_ingredients_json, resolve_ingredients_file
 
     try:
         ingredients_path = resolve_ingredients_file(slug, None, data_dir)
-        items = parse_ingredients_md(ingredients_path)
+        items = parse_ingredients_json(ingredients_path)
         logging.info("Found %d ingredient(s) in '%s'.", len(items), slug)
         add_to_reminders(
             items,

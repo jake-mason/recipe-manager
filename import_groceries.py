@@ -2,51 +2,60 @@
 """Import parsed recipe ingredients into macOS Reminders (Groceries list)."""
 
 import argparse
+import json
 import logging
 import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Set
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 DEFAULT_LIST_NAME = "Groceries"
-BULLET_PREFIX_RE = re.compile(r"^[\*\-\u2022]\s+")
-SECTION_LABEL_RE = re.compile(r"^[A-Z0-9\s\-–]+$")
 
 
-def parse_ingredients_md(path: Path) -> list[str]:
-    """Extract grocery item lines from a parsed ingredients.md file."""
-    text = path.read_text(encoding="utf-8")
+@dataclass
+class IngredientItem:
+    name: str
+    tag_names: list[str] = field(default_factory=list)
+    note: Optional[str] = None
+
+
+def _to_tag_name(s: str) -> str:
+    """Sanitize a string into a valid Reminders tag name (lowercase, hyphens only)."""
+    s = s.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def parse_ingredients_json(
+    path: Path,
+    include_optional: bool = False,
+    recipe_name: Optional[str] = None,
+) -> list[IngredientItem]:
+    """Load ingredients.json and return structured IngredientItems with Reminders tags."""
+    if recipe_name is None:
+        recipe_name = path.parent.name
+    recipe_tag = _to_tag_name(recipe_name)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
     items = []
-
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+    for item in data:
+        if item.get("optional") and not include_optional:
             continue
-
-        line = BULLET_PREFIX_RE.sub("", line).strip()
-        if not line:
+        name = item.get("name", "").strip()
+        if not name:
             continue
-
-        if _is_section_label(line):
-            continue
-
-        items.append(line)
-
+        quantity = item.get("quantity", "").strip()
+        section = item.get("section", "").strip()
+        display_name = f"{name} ({quantity})" if quantity else name
+        tags = [recipe_tag]
+        if section:
+            tags.append(_to_tag_name(section))
+        items.append(IngredientItem(name=display_name, tag_names=tags))
     return items
-
-
-def _is_section_label(line: str) -> bool:
-    """Skip short all-caps section headers like 'SAUCE' or 'MEAT PATTIES'."""
-    if len(line) > 40:
-        return False
-    if any(ch.isdigit() for ch in line):
-        return False
-    if "," in line:
-        return False
-    return bool(SECTION_LABEL_RE.match(line))
 
 
 def resolve_ingredients_file(
@@ -54,11 +63,11 @@ def resolve_ingredients_file(
     file_path: Optional[Path],
     data_dir: Path,
 ) -> Path:
-    """Resolve slug or explicit file path to an ingredients.md path."""
+    """Resolve slug or explicit file path to an ingredients.json path."""
     if file_path is not None:
         path = file_path.expanduser().resolve()
         if path.is_dir():
-            path = path / "ingredients.md"
+            path = path / "ingredients.json"
         if not path.exists():
             raise FileNotFoundError(f"Ingredients file not found: {path}")
         return path
@@ -67,15 +76,15 @@ def resolve_ingredients_file(
         raise ValueError("Recipe slug or --file is required.")
 
     candidates = [
-        data_dir / "recipes-formatted" / slug / "ingredients.md",
-        data_dir / slug / "ingredients.md",
+        data_dir / "recipes-formatted" / slug / "ingredients.json",
+        data_dir / slug / "ingredients.json",
     ]
     for path in candidates:
         if path.exists():
             return path
 
     searched = ", ".join(str(p) for p in candidates)
-    raise FileNotFoundError(f"No ingredients.md found for '{slug}'. Tried: {searched}")
+    raise FileNotFoundError(f"No ingredients.json found for '{slug}'. Tried: {searched}")
 
 
 def _applescript_escape(value: str) -> str:
@@ -129,16 +138,28 @@ def get_existing_reminder_names(list_name: str) -> Set[str]:
     return {name.casefold() for name in names}
 
 
+def _make_reminder_statement(item: IngredientItem, note: Optional[str]) -> str:
+    name_esc = _applescript_escape(item.name)
+    parts = []
+    if item.tag_names:
+        parts.append(" ".join(f"#{t}" for t in item.tag_names))
+    if note or item.note:
+        parts.append(note or item.note)  # type: ignore[arg-type]
+    body = "\n".join(parts) if parts else None
+    props = [f'name:"{name_esc}"']
+    if body:
+        props.append(f'body:"{_applescript_escape(body)}"')
+    return f"make new reminder with properties {{{', '.join(props)}}}"
+
+
 def add_to_reminders(
-    items: list[str],
+    items: list[IngredientItem],
     list_name: str = DEFAULT_LIST_NAME,
     skip_existing: bool = False,
     dry_run: bool = False,
     note: Optional[str] = None,
 ) -> int:
-    """
-    Add items to a Reminders list. Returns the number of reminders created.
-    """
+    """Add items to a Reminders list. Returns the number of reminders created."""
     if not items:
         logging.warning("No ingredients to import.")
         return 0
@@ -146,7 +167,8 @@ def add_to_reminders(
     if dry_run:
         logging.info("Dry run — would add %d item(s) to '%s':", len(items), list_name)
         for item in items:
-            print(item)
+            tag_str = "  " + " ".join(f"#{t}" for t in item.tag_names) if item.tag_names else ""
+            print(f"{item.name}{tag_str}")
         return 0
 
     _require_macos()
@@ -155,7 +177,7 @@ def add_to_reminders(
     to_add = items
     if skip_existing:
         existing = get_existing_reminder_names(list_name)
-        to_add = [item for item in items if item.casefold() not in existing]
+        to_add = [item for item in items if item.name.casefold() not in existing]
         skipped = len(items) - len(to_add)
         if skipped:
             logging.info("Skipping %d existing item(s).", skipped)
@@ -163,20 +185,13 @@ def add_to_reminders(
             logging.info("All items already exist in '%s'.", list_name)
             return 0
 
-    items_literal = ", ".join(f'"{_applescript_escape(item)}"' for item in to_add)
-    note_escaped = _applescript_escape(note) if note else ""
-
-    if note:
-        create_line = f'make new reminder with properties {{name:itemName, body:"{note_escaped}"}}'
-    else:
-        create_line = "make new reminder with properties {name:itemName}"
-
+    statements = "\n            ".join(
+        _make_reminder_statement(item, note) for item in to_add
+    )
     script = f"""
     tell application "Reminders"
         tell list "{_applescript_escape(list_name)}"
-            repeat with itemName in {{{items_literal}}}
-                {create_line}
-            end repeat
+            {statements}
         end tell
     end tell
     """
@@ -201,7 +216,7 @@ def main() -> int:
     parser.add_argument(
         "--file",
         type=Path,
-        help="Path to ingredients.md or a recipe directory containing it.",
+        help="Path to ingredients.json or a recipe directory containing it.",
     )
     parser.add_argument(
         "--data-dir",
@@ -216,7 +231,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--note",
-        help="Optional reminder body text (e.g. recipe slug for traceability).",
+        help="Optional reminder body text applied to all imported items.",
+    )
+    parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="Include ingredients marked optional (skipped by default).",
     )
     parser.add_argument(
         "--skip-existing",
@@ -239,18 +259,18 @@ def main() -> int:
             args.file,
             args.data_dir.resolve(),
         )
-        items = parse_ingredients_md(ingredients_path)
-        note = args.note
-        if note is None and args.slug:
-            note = f"from {args.slug}"
-
+        items = parse_ingredients_json(
+            ingredients_path,
+            include_optional=args.include_optional,
+            recipe_name=args.slug,
+        )
         logging.info("Read %d ingredient(s) from %s", len(items), ingredients_path)
         add_to_reminders(
             items,
             list_name=args.list,
             skip_existing=args.skip_existing,
             dry_run=args.dry_run,
-            note=note if not args.dry_run else None,
+            note=args.note,
         )
         return 0
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
