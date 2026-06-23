@@ -1,6 +1,8 @@
 import argparse
 import json
 import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
 import mimetypes
 import os
 import re
@@ -14,7 +16,14 @@ from urllib.parse import urlparse
 import base64
 
 import fitz  # PyMuPDF
-import ollama
+try:
+    import ollama
+except ImportError:
+    if os.getenv("USE_ANTHROPIC"):
+        logging.warning("Could not import ollama, but that is fine since you specified USE_ANTHROPIC=true")
+    else:
+        logging.debug("ollama import failed and USE_ANTHROPIC is not set.")
+
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
@@ -27,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
@@ -137,9 +145,11 @@ def get_images_from_bytes(data: bytes, mime_hint: str = "", name_hint: str = "")
                 pix = page.get_pixmap(dpi=150)
                 images.append(pix.tobytes("png"))
             doc.close()
+            logging.info("Rendered %d page(s) from PDF.", len(images))
         except Exception as e:
             logging.error("Error reading PDF: %s", e)
     else:
+        logging.debug("Treating %d bytes as a single raw image.", len(data))
         images.append(data)
 
     return images
@@ -316,7 +326,12 @@ def load_recipe_source(source: str) -> Dict[str, Any]:
             logging.info("Found schema.org Recipe JSON-LD; using structured data.")
             slug, ingredients, steps = recipe_from_json_ld(recipe)
             if ingredients or steps:
+                logging.debug(
+                    "JSON-LD yielded slug=%s, %d ingredient(s), %d step char(s).",
+                    slug, len(ingredients), len(steps),
+                )
                 return {"images": [], "text": None, "preparsed": (slug, ingredients, steps)}
+            logging.debug("JSON-LD Recipe had no usable ingredients/steps; falling back to text extraction.")
 
         text = extract_html_text(html, source)
         if not text or len(text) < 80:
@@ -397,11 +412,13 @@ def parse_with_llm(
         parsed_data = json.loads(result_json)
         ingredients = [Ingredient(**i) for i in parsed_data.get("ingredients", [])]
 
-        return (
-            parsed_data.get("recipe_name_slug", "unknown-recipe"),
-            ingredients,
-            parsed_data.get("steps", ""),
+        slug = parsed_data.get("recipe_name_slug", "unknown-recipe")
+        steps = parsed_data.get("steps", "")
+        logging.info(
+            "Ollama extracted slug=%s, %d ingredient(s), %d step char(s).",
+            slug, len(ingredients), len(steps),
         )
+        return slug, ingredients, steps
 
     except Exception as e:
         logging.error("Error communicating with Ollama: %s", e)
@@ -471,11 +488,21 @@ def parse_with_claude(
     if images:
         content: List[Any] = []
         for img_bytes in images:
+            if img_bytes[:2] == b"\xff\xd8":
+                media_type = "image/jpeg"
+            elif img_bytes[:4] == b"\x89PNG":
+                media_type = "image/png"
+            elif img_bytes[:6] in (b"GIF87a", b"GIF89a"):
+                media_type = "image/gif"
+            elif img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP":
+                media_type = "image/webp"
+            else:
+                media_type = "image/png"
             content.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/png",
+                    "media_type": media_type,
                     "data": base64.standard_b64encode(img_bytes).decode("utf-8"),
                 },
             })
@@ -505,11 +532,13 @@ def parse_with_claude(
 
         parsed = tool_use_block.input
         ingredients = [Ingredient(**i) for i in parsed.get("ingredients", [])]
-        return (
-            parsed.get("recipe_name_slug", "unknown-recipe"),
-            ingredients,
-            parsed.get("steps", ""),
+        slug = parsed.get("recipe_name_slug", "unknown-recipe")
+        steps = parsed.get("steps", "")
+        logging.info(
+            "Claude extracted slug=%s, %d ingredient(s), %d step char(s).",
+            slug, len(ingredients), len(steps),
         )
+        return slug, ingredients, steps
 
     except Exception as e:
         logging.error("Error communicating with Anthropic API: %s", e)
@@ -574,11 +603,22 @@ def main():
         action="store_true",
         help="After parsing, import ingredients into macOS Reminders (Groceries list). macOS only.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging.",
+    )
 
     args = parser.parse_args()
 
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose logging enabled.")
+
     if args.use_anthropic:
         os.environ["USE_ANTHROPIC"] = "true"
+        logging.debug("Using Anthropic API backend.")
 
     try:
         loaded = load_recipe_source(args.input_source)
@@ -603,6 +643,10 @@ def main():
     final_name = args.name or env_name or inferred_name
     if not final_name:
         final_name = "unnamed-recipe"
+    logging.debug(
+        "Resolved recipe name '%s' (--name=%s, RECIPE_NAME=%s, inferred=%s).",
+        final_name, args.name, env_name, inferred_name,
+    )
 
     ingredients_file, steps_file = write_recipe_output(
         args.data_dir, final_name, ingredients, steps

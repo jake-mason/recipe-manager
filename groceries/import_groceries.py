@@ -80,6 +80,7 @@ def resolve_ingredients_file(
         data_dir / slug / "ingredients.json",
     ]
     for path in candidates:
+        logging.debug("Looking for ingredients at %s", path)
         if path.exists():
             return path
 
@@ -97,6 +98,7 @@ def _require_macos() -> None:
 
 
 def _run_osascript(script: str) -> str:
+    logging.debug("Running osascript:\n%s", script)
     result = subprocess.run(
         ["osascript", "-e", script],
         capture_output=True,
@@ -104,6 +106,7 @@ def _run_osascript(script: str) -> str:
     )
     if result.returncode != 0:
         stderr = result.stderr.strip() or "osascript failed"
+        logging.debug("osascript exited %d: %s", result.returncode, stderr)
         raise RuntimeError(stderr)
     return result.stdout.strip()
 
@@ -248,7 +251,17 @@ def main() -> int:
         action="store_true",
         help="Print items without creating reminders.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose logging enabled.")
 
     if not args.slug and not args.file:
         parser.error("Provide a recipe slug or --file path.")

@@ -89,7 +89,17 @@ def main() -> int:
         action="store_true",
         help="Pass --sync to each run_docker.sh invocation (push results to iCloud).",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose logging enabled.")
 
     input_dir = args.input_dir.expanduser().resolve()
 
@@ -109,8 +119,9 @@ def main() -> int:
     succeeded = 0
     failed = 0
 
-    for file_path in recipe_files:
+    for index, file_path in enumerate(recipe_files, 1):
         slug = slugify(file_path.stem)
+        logging.info("[%d/%d] %s → slug '%s'", index, len(recipe_files), file_path.name, slug)
         exit_code = run_docker(
             project_dir,
             file_path,

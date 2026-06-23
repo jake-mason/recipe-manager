@@ -21,5 +21,11 @@ RUN if [ "$USE_ANTHROPIC" = "true" ]; then \
     fi
 
 COPY processing/ ./processing/
+COPY groceries/ ./groceries/
 
-ENTRYPOINT ["python", "processing/parse_recipe.py"]
+# Generic Python execution platform: the entrypoint is the interpreter, so any
+# script in the image can be run, e.g.
+#   docker compose run --rm recipe-manager-app processing/batch_parse_recipes.py
+# The default command parses a single recipe when no script is supplied.
+ENTRYPOINT ["python"]
+CMD ["processing/parse_recipe.py"]

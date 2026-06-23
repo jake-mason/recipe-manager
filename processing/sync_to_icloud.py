@@ -63,6 +63,7 @@ def sync_recipe(
         raise FileNotFoundError(f"Recipe not found: {source_dir}")
 
     dest_dir = icloud_dir / slug
+    logging.debug("Syncing '%s': %s → %s", slug, source_dir, dest_dir)
     if skip_existing and dest_dir.exists():
         logging.info("Skipping '%s' — already present in iCloud folder.", slug)
         return False
@@ -123,7 +124,17 @@ def main() -> int:
         action="store_true",
         help="Show what would be copied without writing anything.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose logging enabled.")
 
     if not args.slug and not args.all:
         parser.error("Provide a recipe slug or --all.")
@@ -137,6 +148,7 @@ def main() -> int:
         return 1
 
     formatted_dir = args.data_dir.expanduser().resolve() / "recipes-formatted"
+    logging.debug("iCloud destination: %s | source: %s", icloud_dir, formatted_dir)
 
     if not args.dry_run and not icloud_dir.exists():
         logging.error(
@@ -151,6 +163,7 @@ def main() -> int:
         if not slugs:
             logging.error("No parsed recipes found in %s", formatted_dir)
             return 1
+        logging.info("Syncing %d recipe(s).", len(slugs))
     else:
         slugs = [args.slug]
 

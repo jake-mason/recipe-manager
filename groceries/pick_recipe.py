@@ -105,10 +105,21 @@ def main() -> int:
         action="store_true",
         help="Print ingredients without adding to Reminders.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Verbose logging enabled.")
 
     data_dir = args.data_dir.expanduser().resolve()
     recipes = find_recipes(data_dir)
+    logging.debug("Found %d parsed recipe(s) in %s", len(recipes), data_dir)
 
     if not recipes:
         logging.error("No parsed recipes found in %s/recipes-formatted/", data_dir)
@@ -119,6 +130,7 @@ def main() -> int:
     if not slug:
         print("No recipe selected.")
         return 0
+    logging.debug("Selected recipe '%s'.", slug)
 
     from groceries.import_groceries import add_to_reminders, parse_ingredients_json, resolve_ingredients_file
 

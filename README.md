@@ -92,7 +92,7 @@ recipe-manager/
 │   ├── import_groceries.py      # macOS Reminders import (host only)
 │   └── pick_recipe.py           # Interactive recipe search + grocery import
 ├── run_docker.sh            # Recommended entry point (Docker + optional --groceries / --sync)
-├── docker-compose.yml       # Ollama + one-shot parser service
+├── docker-compose.yml       # Ollama + generic Python execution service
 ├── Dockerfile
 ├── data/
 │   ├── recipes-unformatted/ # Source files (PDF, images, .txt, .md, .docx, etc.)
@@ -140,6 +140,32 @@ docker compose down
 ```bash
 make docker-cleanup
 ```
+
+#### Running other scripts in the container
+
+The image is a generic Python execution platform: its entrypoint is the `python`
+interpreter, and the default command parses a single recipe. To run any other
+script bundled in the image (both `processing/` and `groceries/` are copied in),
+pass its path as the command:
+
+```bash
+# Batch-parse everything in data/recipes-unformatted/
+docker compose run --rm recipe-manager-app processing/batch_parse_recipes.py --dry-run
+
+# Run an arbitrary module or one-off snippet
+docker compose run --rm recipe-manager-app -m processing.parse_recipe --help
+docker compose run --rm recipe-manager-app -c "import sys; print(sys.version)"
+
+# Drop into an interactive Python REPL (override the default command)
+docker compose run --rm recipe-manager-app -i
+
+# Or override the entrypoint entirely for a shell
+docker compose run --rm --entrypoint bash recipe-manager-app
+```
+
+Note that `groceries/import_groceries.py` and `processing/sync_to_icloud.py` rely
+on macOS-only facilities (AppleScript, iCloud Drive) and are meant to run on the
+Mac host, not inside the container.
 
 ### Mode 2: Batch parse everything
 

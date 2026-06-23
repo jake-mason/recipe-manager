@@ -34,7 +34,7 @@ RECIPE_NAME=${POSITIONAL[1]:-""}
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "$INPUT_SOURCE" =~ ^https?:// ]]; then
-    PARSER_COMMAND=("$INPUT_SOURCE")
+    PARSER_COMMAND=("processing/parse_recipe.py" "$INPUT_SOURCE")
     # Compose still expects a volume mount; URL fetching happens inside the container.
     export INPUT_DIR="${PROJECT_DIR}/data"
     export FILENAME="."
@@ -46,7 +46,7 @@ else
     fi
     export INPUT_DIR=$(dirname "$INPUT_PATH")
     export FILENAME=$(basename "$INPUT_PATH")
-    PARSER_COMMAND=("/input/${FILENAME}")
+    PARSER_COMMAND=("processing/parse_recipe.py" "/input/${FILENAME}")
 fi
 
 export OUTPUT_DIR="${PROJECT_DIR}/data"
@@ -81,24 +81,10 @@ if [ "${USE_ANTHROPIC:-false}" != "true" ]; then
 fi
 
 # Run the parser app and capture its output to the terminal
-# Using --build --no-cache to ensure it is always built freshly
+# Using --build to ensure the image is current
 echo "Building and running recipe parser..."
-# #region agent log
-DEBUG_LOG="${PROJECT_DIR}/.cursor/debug-3bb3db.log"
-mkdir -p "$(dirname "$DEBUG_LOG")"
-printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"run_docker.sh:docker-run","message":"docker compose command","data":{"parser_command":"%s","recipe_name":"%s","input_dir":"%s","filename":"%s"},"timestamp":%s}\n' \
-    "$(printf '%s' "${PARSER_COMMAND[*]}" | sed 's/"/\\"/g')" \
-    "$(printf '%s' "$RECIPE_NAME" | sed 's/"/\\"/g')" \
-    "$(printf '%s' "$INPUT_DIR" | sed 's/"/\\"/g')" \
-    "$(printf '%s' "$FILENAME" | sed 's/"/\\"/g')" \
-    "$(($(date +%s) * 1000))" >> "$DEBUG_LOG"
-# #endregion
 docker compose run --rm --build -e "RECIPE_NAME=${RECIPE_NAME}" recipe-manager-app "${PARSER_COMMAND[@]}"
 PARSE_EXIT=$?
-# #region agent log
-printf '{"sessionId":"3bb3db","runId":"pre-fix","hypothesisId":"H1","location":"run_docker.sh:docker-exit","message":"docker compose exit","data":{"exit_code":%s},"timestamp":%s}\n' \
-    "$PARSE_EXIT" "$(($(date +%s) * 1000))" >> "$DEBUG_LOG"
-# #endregion
 
 if [ "$PARSE_EXIT" -ne 0 ]; then
     echo "Recipe parsing failed (exit $PARSE_EXIT)."
