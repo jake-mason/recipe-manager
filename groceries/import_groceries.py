@@ -202,7 +202,7 @@ def add_to_reminders(
 
 
 def main() -> int:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = Path(__file__).resolve().parent.parent
     default_data_dir = project_dir / "data"
 
     parser = argparse.ArgumentParser(

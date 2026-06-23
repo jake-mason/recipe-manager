@@ -4,17 +4,25 @@ Turn recipe photos, PDFs, text files, and **URLs** into structured markdown (ing
 
 ## What it does
 
-1. **Parse** — Send an image, PDF, plain text file, or **http(s) URL** to [Ollama](https://ollama.com). Images and PDFs use a vision model; text files and web pages use a text model. Web pages with [schema.org](https://schema.org/Recipe) JSON-LD skip the LLM entirely.
-2. **Search & import** — Run an interactive search over your parsed recipe library and add ingredients to the **Groceries** Reminders list in one step.
+The repo is split into two sections:
 
-Parsing runs in Docker. Reminders import runs on the **Mac host** only (AppleScript cannot run inside a container).
+**Processing** (`processing/`) — turning input recipes into structured output:
+
+1. **Parse** — Send an image, PDF, plain text file, or **http(s) URL** to [Ollama](https://ollama.com). Images and PDFs use a vision model; text files and web pages use a text model. Web pages with [schema.org](https://schema.org/Recipe) JSON-LD skip the LLM entirely.
+2. **Publish (optional)** — Sync a processed recipe to a shared **iCloud Drive** folder so it's available on your other devices.
+
+**Groceries** (`groceries/`) — using processed recipes:
+
+3. **Search & import** — Run an interactive search over your parsed recipe library and add ingredients to the **Groceries** Reminders list in one step.
+
+Parsing runs in Docker. Reminders import and iCloud sync run on the **Mac host** only (AppleScript and iCloud Drive aren't available inside a container).
 
 ## Prerequisites
 
 - **Docker** and **Docker Compose**
 - Enough disk/RAM for Ollama and a vision model (default: `qwen2.5vl:3b`)
 - **macOS** (for grocery import): Reminders app with a list named exactly **Groceries**, signed into the same iCloud account as your iPhone
-- **fzf** (optional, recommended): `brew install fzf` — used by `pick_recipe.py` for live-filter search
+- **fzf** (optional, recommended): `brew install fzf` — used by `groceries/pick_recipe.py` for live-filter search
 
 ## Quick start (Docker)
 
@@ -38,7 +46,7 @@ Then parse a recipe:
 
 Output appears under `data/recipes-formatted/tuscan-chicken/`:
 
-- `ingredients.md`
+- `ingredients.json`
 - `steps.md`
 
 First run downloads the Ollama model and may take several minutes.
@@ -49,7 +57,7 @@ First run downloads the Ollama model and may take several minutes.
 ./run_docker.sh /path/to/recipe.pdf tuscan-chicken --groceries
 ```
 
-After parsing, this runs `import_groceries.py` on your Mac. Pass a **recipe name** when using `--groceries` so the correct folder is imported (otherwise the script uses the most recently modified folder under `data/recipes-formatted/`).
+After parsing, this runs `groceries/import_groceries.py` on your Mac. Pass a **recipe name** when using `--groceries` so the correct folder is imported (otherwise the script uses the most recently modified folder under `data/recipes-formatted/`).
 
 ## Configuration
 
@@ -65,23 +73,34 @@ OLLAMA_MODEL=qwen2.5vl:3b
 | `OLLAMA_HOST` | Ollama API URL. Use `http://ollama:11434` inside Docker Compose; use `http://localhost:11434` if running `parse_recipe.py` natively against a local Ollama instance. |
 | `OLLAMA_MODEL` | Vision model tag for PDF/image extraction (and fallback for HTML/text). |
 | `OLLAMA_TEXT_MODEL` | Optional text-only model for HTML pages and `.txt`/`.md` files (e.g. `qwen2.5:3b`). Defaults to `OLLAMA_MODEL` if unset. |
+| `RECIPE_ICLOUD_DIR` | Optional. Destination folder for `sync_to_icloud.py` / `--sync`, e.g. `~/Library/Mobile Documents/com~apple~CloudDocs/Recipes`. No default — sync requires this (or `--icloud-dir`). |
 
 ## Project layout
 
+The code is organized into two sections:
+
+- **`processing/`** — turning input recipes into structured output.
+- **`groceries/`** — selecting processed recipes and adding ingredients to the grocery list.
+
 ```
 recipe-manager/
-├── parse_recipe.py          # Core parser (PDF/image/text/URL → markdown)
-├── import_groceries.py      # macOS Reminders import (host only)
-├── pick_recipe.py           # Interactive recipe search + grocery import
-├── batch_parse_recipes.py   # Batch-parse all files in recipes-unformatted/
-├── run_docker.sh            # Recommended entry point (Docker + optional groceries)
+├── processing/
+│   ├── parse_recipe.py          # Core parser (PDF/image/text/URL → structured output)
+│   ├── batch_parse_recipes.py   # Batch-parse all files in recipes-unformatted/
+│   └── sync_to_icloud.py        # Publish processed recipes to a shared iCloud folder (host only)
+├── groceries/
+│   ├── import_groceries.py      # macOS Reminders import (host only)
+│   └── pick_recipe.py           # Interactive recipe search + grocery import
+├── run_docker.sh            # Recommended entry point (Docker + optional --groceries / --sync)
 ├── docker-compose.yml       # Ollama + one-shot parser service
 ├── Dockerfile
 ├── data/
-│   ├── recipes-unformatted/ # Source files (PDF, images, .txt, .md)
-│   └── recipes-formatted/   # Parser output (slug/ingredients.md, steps.md)
+│   ├── recipes-unformatted/ # Source files (PDF, images, .txt, .md, .docx, etc.)
+│   └── recipes-formatted/   # Parser output (slug/ingredients.json, steps.md)
 └── Makefile                 # docker-cleanup helper
 ```
+
+Both directories are Python packages; the scripts run either as plain scripts (`python3 processing/parse_recipe.py`) or as modules (`python3 -m processing.parse_recipe`).
 
 ## Working with recipes
 
@@ -90,14 +109,15 @@ recipe-manager/
 `run_docker.sh` starts Ollama, pulls the model if needed, builds the parser image, and runs one parse job.
 
 ```bash
-./run_docker.sh <recipe_file_or_url> [recipe_name] [--groceries]
+./run_docker.sh <recipe_file_or_url> [recipe_name] [--groceries] [--sync]
 ```
 
 | Argument | Description |
 |----------|-------------|
-| `recipe_file_or_url` | Path to a **PDF**, **image**, or **`.txt`/`.md`** file, or an **http(s) URL** |
+| `recipe_file_or_url` | Path to a **PDF**, **image**, **`.txt`/`.md`**, or **document** (`.docx`, `.odt`, `.rtf`, `.epub`, `.html`, …) file, or an **http(s) URL** |
 | `recipe_name` | Optional slug (e.g. `tuscan-chicken`). Overrides the LLM-generated name. |
 | `--groceries` | After a successful parse, import ingredients into Reminders on the Mac |
+| `--sync` | After a successful parse, publish the recipe to the shared iCloud folder (needs `RECIPE_ICLOUD_DIR`) |
 
 **Examples:**
 
@@ -126,10 +146,10 @@ make docker-cleanup
 Parse all supported files in `data/recipes-unformatted/` in one shot:
 
 ```bash
-python3 batch_parse_recipes.py [--dry-run] [--fail-fast] [--groceries]
+python3 processing/batch_parse_recipes.py [--dry-run] [--fail-fast] [--groceries] [--sync]
 ```
 
-Supported formats: PDF, JPEG, PNG, GIF, WEBP, HEIC, TXT, MD.
+Supported formats: PDF, JPEG, PNG, GIF, WEBP, HEIC, TXT, MD. Pass `--sync` to publish each parsed recipe to the shared iCloud folder.
 
 ### Mode 3: Native Python (no Docker)
 
@@ -139,9 +159,9 @@ Use this if Ollama is already running on your Mac.
 pip install -r requirements.txt
 export OLLAMA_HOST=http://localhost:11434
 
-python3 parse_recipe.py /path/to/recipe.pdf --name tuscan-chicken
-python3 parse_recipe.py data/recipes-unformatted/hot_dagos_v2.txt --name hot-dagos
-python3 parse_recipe.py "https://www.example.com/recipe/print/" --name tuscan-chicken
+python3 processing/parse_recipe.py /path/to/recipe.pdf --name tuscan-chicken
+python3 processing/parse_recipe.py data/recipes-unformatted/hot_dagos_v2.txt --name hot-dagos
+python3 processing/parse_recipe.py "https://www.example.com/recipe/print/" --name tuscan-chicken
 ```
 
 | Flag | Description |
@@ -156,28 +176,28 @@ python3 parse_recipe.py "https://www.example.com/recipe/print/" --name tuscan-ch
 Search your parsed recipe library and add ingredients to Reminders in one command:
 
 ```bash
-python3 pick_recipe.py
+python3 groceries/pick_recipe.py
 ```
 
 If [fzf](https://github.com/junegunn/fzf) is installed, you get a live-filter search — type to narrow, arrow keys to navigate, Enter to select. Without fzf, it falls back to a simple text filter and numbered list.
 
 ```bash
-python3 pick_recipe.py --dry-run        # preview ingredients without touching Reminders
-python3 pick_recipe.py --skip-existing  # skip items already in the list
-python3 pick_recipe.py --list "Shopping List"  # use a different Reminders list
+python3 groceries/pick_recipe.py --dry-run        # preview ingredients without touching Reminders
+python3 groceries/pick_recipe.py --skip-existing  # skip items already in the list
+python3 groceries/pick_recipe.py --list "Shopping List"  # use a different Reminders list
 ```
 
 ### Mode 5: Grocery import only
 
-Use this when you already have parsed `ingredients.md` files and only need Reminders updated.
+Use this when you already have parsed `ingredients.json` files and only need Reminders updated.
 
 ```bash
 # By recipe slug
-python3 import_groceries.py tuscan-chicken
+python3 groceries/import_groceries.py tuscan-chicken
 
 # By explicit file or recipe directory
-python3 import_groceries.py --file data/recipes-formatted/tuscan-chicken/ingredients.md
-python3 import_groceries.py --file data/recipes-formatted/tuscan-chicken
+python3 groceries/import_groceries.py --file data/recipes-formatted/tuscan-chicken/ingredients.json
+python3 groceries/import_groceries.py --file data/recipes-formatted/tuscan-chicken
 ```
 
 | Flag | Description |
@@ -188,17 +208,55 @@ python3 import_groceries.py --file data/recipes-formatted/tuscan-chicken
 | `--list` | Reminders list name (default: `Groceries`) |
 | `--data-dir` | Base `data/` directory for slug lookup |
 
+### Mode 6: Publish to a shared iCloud folder
+
+Push a processed recipe's structured output (`ingredients.json` + `steps.md`) into a shared folder in iCloud Drive so it syncs to your other devices or people you share the folder with. Runs on the **Mac host** (iCloud Drive isn't available inside Docker).
+
+Set the destination once in `.env`:
+
+```env
+RECIPE_ICLOUD_DIR=~/Library/Mobile Documents/com~apple~CloudDocs/Recipes
+```
+
+Then:
+
+```bash
+# Sync a single recipe
+python3 processing/sync_to_icloud.py tuscan-chicken
+
+# Or override the destination per-run
+python3 processing/sync_to_icloud.py tuscan-chicken --icloud-dir "~/Library/Mobile Documents/com~apple~CloudDocs/Recipes"
+
+# Sync the whole library; preview first
+python3 processing/sync_to_icloud.py --all --dry-run
+python3 processing/sync_to_icloud.py --all --skip-existing
+```
+
+Or do it automatically right after parsing with `--sync` (see Modes 1 and 2):
+
+```bash
+./run_docker.sh ~/Downloads/lasagna.pdf lasagna --sync
+```
+
+| Flag | Description |
+|------|-------------|
+| `slug` / `--all` | A single recipe slug, or `--all` for every parsed recipe |
+| `--icloud-dir` | Destination folder (overrides `RECIPE_ICLOUD_DIR`) |
+| `--skip-existing` | Skip recipes already present in the iCloud folder |
+| `--dry-run` | Show what would be copied without writing |
+| `--data-dir` | Base `data/` directory for source lookup |
+
 ## Output format
 
 Each parsed recipe gets its own directory:
 
 ```
 data/recipes-formatted/<recipe-slug>/
-├── ingredients.md   # Markdown ingredient lines
-└── steps.md         # Markdown instructions
+├── ingredients.json  # Structured ingredients (name, quantity, prep_note, section, optional)
+└── steps.md          # Markdown instructions
 ```
 
-The LLM preserves bullets and formatting where possible. `import_groceries.py` reads `ingredients.md` line by line: it skips markdown headers, strips bullet prefixes, and ignores short all-caps section labels (e.g. `SAUCE`, `MEAT PATTIES`). Each remaining line becomes one Reminders title (quantities and prep notes stay on the title).
+`groceries/import_groceries.py` reads `ingredients.json`: each entry becomes one Reminders title (`name (quantity)`), tagged with the recipe slug and any section as `#tags`. Items marked `optional` are skipped unless `--include-optional` is passed.
 
 ## Supported inputs
 
@@ -207,9 +265,12 @@ The LLM preserves bullets and formatting where possible. `import_groceries.py` r
 | PDF (file or URL) | Yes — each page rendered to an image for the vision model |
 | Images (JPEG, PNG, HEIC, etc.; file or URL) | Yes — vision model |
 | Plain text (`.txt`, `.md`) | Yes — sent as text to the LLM |
+| Documents (`.docx`, `.odt`, `.rtf`, `.epub`, `.html`/`.htm`, `.rst`, `.org`, `.tex`, `.textile`, `.fb2`, `.docbook`) | Yes — converted to markdown via `pandoc`, then sent as text to the LLM |
 | Recipe web pages (`http`/`https`) | Yes — JSON-LD `Recipe` schema when present; otherwise main text via trafilatura + text LLM |
 
 For URLs, use the site's **print** or **print-friendly** link when available (fewer ads and sidebars).
+
+Document formats require the [`pandoc`](https://pandoc.org/) binary on your PATH. Install it with `brew install pandoc` (macOS) or `apt-get install pandoc` (Linux). It is already installed in the Docker image, so no extra setup is needed for Docker-based parsing.
 
 ## macOS Reminders setup
 
@@ -238,19 +299,19 @@ Items created on the Mac should appear on iPhone in **Reminders → Groceries** 
 **Spin up and shop from existing recipes:**
 
 ```bash
-python3 pick_recipe.py
+python3 groceries/pick_recipe.py
 ```
 
 **Re-import without duplicates:**
 
 ```bash
-python3 import_groceries.py my-recipe --skip-existing
+python3 groceries/import_groceries.py my-recipe --skip-existing
 ```
 
 **Parse everything in the unformatted folder:**
 
 ```bash
-python3 batch_parse_recipes.py
+python3 processing/batch_parse_recipes.py
 ```
 
 ## Troubleshooting
@@ -261,12 +322,12 @@ python3 batch_parse_recipes.py
 | Parser cannot reach Ollama | In Docker, `OLLAMA_HOST` must be `http://ollama:11434`, not `localhost` |
 | Empty or bad extraction | Try a clearer scan or the print URL; use `--name` for a stable folder; try a different `--model` or set `OLLAMA_TEXT_MODEL` for HTML/text |
 | URL fetch fails or 403 | Site may block bots; try saving as PDF and parsing the file instead |
-| Grocery import finds wrong recipe | Pass the slug explicitly; use `--file` pointing at the right `ingredients.md` |
+| Grocery import finds wrong recipe | Pass the slug explicitly; use `--file` pointing at the right `ingredients.json` |
 | `--groceries` cannot resolve slug | Always pass `recipe_name` as the second argument to `run_docker.sh` |
-| `pick_recipe.py` shows no recipes | Parse some recipes first — they must exist under `data/recipes-formatted/` |
+| `groceries/pick_recipe.py` shows no recipes | Parse some recipes first — they must exist under `data/recipes-formatted/` |
 
 ## Dependencies
 
 **Parser** (`requirements.txt`): PyMuPDF, ollama, pydantic, python-dotenv, requests, trafilatura, beautifulsoup4
 
-**Grocery import / picker**: Python 3.9+ standard library only (`osascript` on macOS); `fzf` optional for `pick_recipe.py`
+**Grocery import / picker**: Python 3.9+ standard library only (`osascript` on macOS); `fzf` optional for `groceries/pick_recipe.py`

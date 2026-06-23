@@ -38,10 +38,13 @@ def run_docker(
     *,
     dry_run: bool,
     groceries: bool,
+    sync: bool,
 ) -> int:
     cmd = [str(project_dir / "run_docker.sh"), str(file_path.resolve()), slug]
     if groceries:
         cmd.append("--groceries")
+    if sync:
+        cmd.append("--sync")
 
     display = " ".join(cmd)
     if dry_run:
@@ -54,7 +57,7 @@ def run_docker(
 
 
 def main() -> int:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = Path(__file__).resolve().parent.parent
     default_input_dir = project_dir / "data" / "recipes-unformatted"
 
     parser = argparse.ArgumentParser(
@@ -80,6 +83,11 @@ def main() -> int:
         "--groceries",
         action="store_true",
         help="Pass --groceries to each run_docker.sh invocation.",
+    )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Pass --sync to each run_docker.sh invocation (push results to iCloud).",
     )
     args = parser.parse_args()
 
@@ -109,6 +117,7 @@ def main() -> int:
             slug,
             dry_run=args.dry_run,
             groceries=args.groceries,
+            sync=args.sync,
         )
         if exit_code == 0:
             succeeded += 1

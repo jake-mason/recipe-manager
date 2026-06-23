@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from parse_recipe import load_recipe_source, write_recipe_output
+from processing.parse_recipe import load_recipe_source, write_recipe_output
 from tests.conftest import SAMPLE_JSON_LD_HTML, SAMPLE_PLAIN_HTML
 
 
@@ -26,7 +26,7 @@ def _make_fetch_response(body: bytes, content_type: str):
 class TestLoadRecipeSourceUrl:
     def test_url_with_json_ld_returns_preparsed(self):
         html_bytes = SAMPLE_JSON_LD_HTML.encode()
-        with patch("parse_recipe.fetch_url", return_value=(html_bytes, "text/html")):
+        with patch("processing.parse_recipe.fetch_url", return_value=(html_bytes, "text/html")):
             result = load_recipe_source("https://example.com/recipe")
 
         assert "preparsed" in result
@@ -37,7 +37,7 @@ class TestLoadRecipeSourceUrl:
 
     def test_url_with_plain_html_returns_text(self):
         html_bytes = SAMPLE_PLAIN_HTML.encode()
-        with patch("parse_recipe.fetch_url", return_value=(html_bytes, "text/html")):
+        with patch("processing.parse_recipe.fetch_url", return_value=(html_bytes, "text/html")):
             result = load_recipe_source("https://example.com/recipe")
 
         assert "text" in result
@@ -46,7 +46,7 @@ class TestLoadRecipeSourceUrl:
 
     def test_url_returns_images_for_image_content_type(self):
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
-        with patch("parse_recipe.fetch_url", return_value=(png_bytes, "image/png")):
+        with patch("processing.parse_recipe.fetch_url", return_value=(png_bytes, "image/png")):
             result = load_recipe_source("https://example.com/photo.png")
 
         assert result["images"] == [png_bytes]
@@ -57,8 +57,8 @@ class TestLoadRecipeSourceUrl:
         fake_doc = MagicMock()
         fake_doc.__iter__ = MagicMock(return_value=iter([fake_page]))
 
-        with patch("parse_recipe.fetch_url", return_value=(b"%PDF-1.4 data", "application/pdf")), \
-             patch("parse_recipe.fitz.open", return_value=fake_doc):
+        with patch("processing.parse_recipe.fetch_url", return_value=(b"%PDF-1.4 data", "application/pdf")), \
+             patch("processing.parse_recipe.fitz.open", return_value=fake_doc):
             result = load_recipe_source("https://example.com/recipe.pdf")
 
         assert result["images"] == [b"page_data"]
@@ -67,15 +67,15 @@ class TestLoadRecipeSourceUrl:
         fake_doc = MagicMock()
         fake_doc.__iter__ = MagicMock(return_value=iter([]))
 
-        with patch("parse_recipe.fetch_url", return_value=(b"%PDF data", "text/plain")), \
-             patch("parse_recipe.fitz.open", return_value=fake_doc):
+        with patch("processing.parse_recipe.fetch_url", return_value=(b"%PDF data", "text/plain")), \
+             patch("processing.parse_recipe.fitz.open", return_value=fake_doc):
             result = load_recipe_source("https://example.com/menu.pdf")
 
         assert "images" in result
 
     def test_url_too_short_text_raises(self):
         sparse_html = b"<html><body><p>hi</p></body></html>"
-        with patch("parse_recipe.fetch_url", return_value=(sparse_html, "text/html")):
+        with patch("processing.parse_recipe.fetch_url", return_value=(sparse_html, "text/html")):
             with pytest.raises(ValueError, match="enough text"):
                 load_recipe_source("https://example.com/bad")
 
@@ -126,15 +126,15 @@ class TestEndToEndParseFlow:
             "Ingredients: eggs, flour, sugar. Steps: mix, bake 30 min.", encoding="utf-8"
         )
 
-        from parse_recipe import Ingredient
+        from processing.parse_recipe import Ingredient
         mock_ingredients = [
             Ingredient(name="Egg", quantity="3", prep_note="", section="", optional=False),
             Ingredient(name="Flour", quantity="2 cups", prep_note="", section="", optional=False),
         ]
         mock_result = ("banana-cake", mock_ingredients, "1. Mix.\n2. Bake 30 min.")
 
-        with patch("parse_recipe.parse_with_llm", return_value=mock_result):
-            from parse_recipe import main
+        with patch("processing.parse_recipe.parse_with_llm", return_value=mock_result):
+            from processing.parse_recipe import main
             import sys
 
             test_args = [
@@ -158,9 +158,9 @@ class TestEndToEndParseFlow:
         """When JSON-LD is found, parse_with_llm must not be called."""
         html_bytes = SAMPLE_JSON_LD_HTML.encode()
 
-        with patch("parse_recipe.fetch_url", return_value=(html_bytes, "text/html")), \
-             patch("parse_recipe.parse_with_llm") as mock_llm:
-            from parse_recipe import main
+        with patch("processing.parse_recipe.fetch_url", return_value=(html_bytes, "text/html")), \
+             patch("processing.parse_recipe.parse_with_llm") as mock_llm:
+            from processing.parse_recipe import main
             import sys
 
             test_args = [

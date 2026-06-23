@@ -4,6 +4,8 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,11 +21,32 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
+# Allow running as a plain script (python processing/parse_recipe.py) while still
+# resolving sibling packages like `groceries` via absolute imports.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+# Document formats pandoc can convert to markdown text for the text-only LLM path.
+# (PDF and images go through the vision path instead; .txt/.md are read directly.)
+PANDOC_EXTENSIONS = {
+    ".docx",
+    ".odt",
+    ".rtf",
+    ".epub",
+    ".html",
+    ".htm",
+    ".rst",
+    ".org",
+    ".tex",
+    ".textile",
+    ".fb2",
+    ".docbook",
+}
 FETCH_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -128,6 +151,41 @@ def get_images_from_file(file_path: Path) -> List[bytes]:
     with open(file_str, "rb") as f:
         data = f.read()
     return get_images_from_bytes(data, mime_hint=mime_type or "", name_hint=file_str)
+
+
+def convert_with_pandoc(file_path: Path) -> str:
+    """Convert a document (docx, odt, rtf, epub, html, etc.) to markdown text via pandoc.
+
+    Requires the `pandoc` binary on PATH. Raises ValueError if pandoc is missing,
+    the conversion fails, or the result is empty.
+    """
+    if shutil.which("pandoc") is None:
+        raise ValueError(
+            "pandoc is required to read this file format but was not found on PATH. "
+            "Install it (e.g. `brew install pandoc` or `apt-get install pandoc`)."
+        )
+
+    logging.info("Converting %s to markdown via pandoc...", file_path.name)
+    try:
+        result = subprocess.run(
+            ["pandoc", "--to", "gfm", "--wrap", "none", str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ValueError(f"pandoc timed out converting '{file_path}'.") from e
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise ValueError(f"pandoc failed to convert '{file_path}': {stderr}")
+
+    text = (result.stdout or "").strip()
+    if not text:
+        raise ValueError(f"pandoc produced no text for '{file_path}'.")
+
+    logging.info("pandoc produced %d characters of markdown.", len(text))
+    return text
 
 
 def _recipe_objects_from_json_ld(data: Any) -> List[Dict[str, Any]]:
@@ -270,11 +328,16 @@ def load_recipe_source(source: str) -> Dict[str, Any]:
     if not input_path.exists():
         raise FileNotFoundError(f"Input '{source}' does not exist.")
 
-    if input_path.suffix.lower() in (".txt", ".md"):
+    suffix = input_path.suffix.lower()
+
+    if suffix in (".txt", ".md"):
         text = input_path.read_text(encoding="utf-8", errors="replace")
         if not text.strip():
             raise ValueError(f"File '{source}' is empty.")
         return {"images": [], "text": text}
+
+    if suffix in PANDOC_EXTENSIONS:
+        return {"images": [], "text": convert_with_pandoc(input_path)}
 
     return {"images": get_images_from_file(input_path), "text": None}
 
@@ -553,7 +616,7 @@ def main():
         if sys.platform != "darwin":
             logging.warning("--import-groceries is only supported on macOS; skipping.")
         else:
-            from import_groceries import add_to_reminders, parse_ingredients_json
+            from groceries.import_groceries import add_to_reminders, parse_ingredients_json
 
             items = parse_ingredients_json(ingredients_file, recipe_name=final_name)
             add_to_reminders(items)

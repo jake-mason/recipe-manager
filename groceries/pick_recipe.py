@@ -4,8 +4,13 @@
 import argparse
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
+
+# Allow running as a plain script (python groceries/pick_recipe.py) while still
+# resolving the `groceries` package via absolute imports.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -73,7 +78,7 @@ def pick_recipe(recipes: list[str]) -> Optional[str]:
 
 
 def main() -> int:
-    project_dir = Path(__file__).resolve().parent
+    project_dir = Path(__file__).resolve().parent.parent
     default_data_dir = project_dir / "data"
 
     parser = argparse.ArgumentParser(
@@ -115,7 +120,7 @@ def main() -> int:
         print("No recipe selected.")
         return 0
 
-    from import_groceries import add_to_reminders, parse_ingredients_json, resolve_ingredients_file
+    from groceries.import_groceries import add_to_reminders, parse_ingredients_json, resolve_ingredients_file
 
     try:
         ingredients_path = resolve_ingredients_file(slug, None, data_dir)

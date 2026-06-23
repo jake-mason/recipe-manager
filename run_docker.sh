@@ -3,12 +3,16 @@
 # Wrapper to run the recipe parser using Docker Compose (which includes Ollama)
 
 IMPORT_GROCERIES=false
+SYNC_ICLOUD=false
 POSITIONAL=()
 
 for arg in "$@"; do
     case "$arg" in
         --groceries)
             IMPORT_GROCERIES=true
+            ;;
+        --sync)
+            SYNC_ICLOUD=true
             ;;
         *)
             POSITIONAL+=("$arg")
@@ -17,7 +21,7 @@ for arg in "$@"; do
 done
 
 if [ "${#POSITIONAL[@]}" -lt 1 ] || [ "${#POSITIONAL[@]}" -gt 2 ]; then
-    echo "Usage: ./run_docker.sh <recipe_file_or_url> [recipe_name] [--groceries]"
+    echo "Usage: ./run_docker.sh <recipe_file_or_url> [recipe_name] [--groceries] [--sync]"
     echo "Example: ./run_docker.sh /path/to/shared/recipes/lasagna.pdf lasagna"
     echo "         ./run_docker.sh /path/to/shared/recipes/pizza.jpg"
     echo "         ./run_docker.sh https://example.com/recipe/print/ lasagna --groceries"
@@ -101,23 +105,38 @@ if [ "$PARSE_EXIT" -ne 0 ]; then
     exit "$PARSE_EXIT"
 fi
 
+# Resolve the recipe slug once for any post-parse host steps (groceries / sync).
+RESOLVED_SLUG="$RECIPE_NAME"
+if { [ "$IMPORT_GROCERIES" = true ] || [ "$SYNC_ICLOUD" = true ]; } && [ -z "$RESOLVED_SLUG" ]; then
+    LATEST_DIR=$(ls -td "${PROJECT_DIR}/data/recipes-formatted"/*/ 2>/dev/null | head -1)
+    if [ -n "$LATEST_DIR" ]; then
+        RESOLVED_SLUG=$(basename "$LATEST_DIR")
+    fi
+fi
+
 if [ "$IMPORT_GROCERIES" = true ]; then
     echo "Importing ingredients to Reminders..."
-    IMPORT_SLUG="$RECIPE_NAME"
-    if [ -z "$IMPORT_SLUG" ]; then
-        LATEST_DIR=$(ls -td "${PROJECT_DIR}/data/recipes-formatted"/*/ 2>/dev/null | head -1)
-        if [ -n "$LATEST_DIR" ]; then
-            IMPORT_SLUG=$(basename "$LATEST_DIR")
-        fi
-    fi
-    if [ -z "$IMPORT_SLUG" ]; then
+    if [ -z "$RESOLVED_SLUG" ]; then
         echo "Error: could not determine recipe slug for grocery import. Pass a recipe name or run import manually."
         exit 1
     fi
-    python3 "${PROJECT_DIR}/import_groceries.py" "$IMPORT_SLUG" --data-dir "${PROJECT_DIR}/data"
+    python3 "${PROJECT_DIR}/groceries/import_groceries.py" "$RESOLVED_SLUG" --data-dir "${PROJECT_DIR}/data"
     GROCERY_EXIT=$?
     if [ "$GROCERY_EXIT" -ne 0 ]; then
         exit "$GROCERY_EXIT"
+    fi
+fi
+
+if [ "$SYNC_ICLOUD" = true ]; then
+    echo "Syncing recipe to iCloud folder..."
+    if [ -z "$RESOLVED_SLUG" ]; then
+        echo "Error: could not determine recipe slug for iCloud sync. Pass a recipe name or run sync manually."
+        exit 1
+    fi
+    python3 "${PROJECT_DIR}/processing/sync_to_icloud.py" "$RESOLVED_SLUG" --data-dir "${PROJECT_DIR}/data"
+    SYNC_EXIT=$?
+    if [ "$SYNC_EXIT" -ne 0 ]; then
+        exit "$SYNC_EXIT"
     fi
 fi
 

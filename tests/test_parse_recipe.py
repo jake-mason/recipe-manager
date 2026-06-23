@@ -6,13 +6,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from parse_recipe import (
+from processing.parse_recipe import (
     Ingredient,
     _instruction_lines,
     _recipe_objects_from_json_ld,
+    convert_with_pandoc,
     extract_json_ld_recipe,
     get_images_from_bytes,
     is_url,
+    load_recipe_source,
     recipe_from_json_ld,
     slugify,
     write_recipe_output,
@@ -267,7 +269,7 @@ class TestGetImagesFromBytes:
         fake_doc = MagicMock()
         fake_doc.__iter__ = MagicMock(return_value=iter([fake_page]))
 
-        with patch("parse_recipe.fitz.open", return_value=fake_doc):
+        with patch("processing.parse_recipe.fitz.open", return_value=fake_doc):
             result = get_images_from_bytes(b"%PDF-1.4 fake content")
 
         assert result == [b"page_png_data"]
@@ -278,7 +280,7 @@ class TestGetImagesFromBytes:
         fake_doc = MagicMock()
         fake_doc.__iter__ = MagicMock(return_value=iter([fake_page]))
 
-        with patch("parse_recipe.fitz.open", return_value=fake_doc):
+        with patch("processing.parse_recipe.fitz.open", return_value=fake_doc):
             result = get_images_from_bytes(b"not really pdf", mime_hint="application/pdf")
 
         assert result == [b"page_png_data"]
@@ -287,13 +289,13 @@ class TestGetImagesFromBytes:
         fake_doc = MagicMock()
         fake_doc.__iter__ = MagicMock(return_value=iter([]))
 
-        with patch("parse_recipe.fitz.open", return_value=fake_doc):
+        with patch("processing.parse_recipe.fitz.open", return_value=fake_doc):
             result = get_images_from_bytes(b"data", name_hint="recipe.pdf")
 
         assert result == []
 
     def test_fitz_error_returns_empty(self):
-        with patch("parse_recipe.fitz.open", side_effect=Exception("corrupt")):
+        with patch("processing.parse_recipe.fitz.open", side_effect=Exception("corrupt")):
             result = get_images_from_bytes(b"%PDF-bad")
         assert result == []
 
@@ -340,3 +342,64 @@ class TestWriteRecipeOutput:
     def test_creates_nested_directory(self, tmp_path):
         write_recipe_output(str(tmp_path / "output"), "new-recipe", [_ing("Flour", "1 cup")], "1. Mix.")
         assert (tmp_path / "output" / "new-recipe" / "ingredients.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# convert_with_pandoc
+# ---------------------------------------------------------------------------
+
+class TestConvertWithPandoc:
+    def test_missing_pandoc_raises(self, tmp_path):
+        doc = tmp_path / "recipe.docx"
+        doc.write_bytes(b"fake")
+        with patch("processing.parse_recipe.shutil.which", return_value=None):
+            with pytest.raises(ValueError, match="pandoc is required"):
+                convert_with_pandoc(doc)
+
+    def test_successful_conversion_returns_text(self, tmp_path):
+        doc = tmp_path / "recipe.docx"
+        doc.write_bytes(b"fake")
+        completed = MagicMock(returncode=0, stdout="# Soup\n\n- Water\n", stderr="")
+        with patch("processing.parse_recipe.shutil.which", return_value="/usr/bin/pandoc"), \
+             patch("processing.parse_recipe.subprocess.run", return_value=completed):
+            assert convert_with_pandoc(doc) == "# Soup\n\n- Water"
+
+    def test_nonzero_returncode_raises(self, tmp_path):
+        doc = tmp_path / "recipe.docx"
+        doc.write_bytes(b"fake")
+        completed = MagicMock(returncode=1, stdout="", stderr="boom")
+        with patch("processing.parse_recipe.shutil.which", return_value="/usr/bin/pandoc"), \
+             patch("processing.parse_recipe.subprocess.run", return_value=completed):
+            with pytest.raises(ValueError, match="pandoc failed"):
+                convert_with_pandoc(doc)
+
+    def test_empty_output_raises(self, tmp_path):
+        doc = tmp_path / "recipe.docx"
+        doc.write_bytes(b"fake")
+        completed = MagicMock(returncode=0, stdout="   \n", stderr="")
+        with patch("processing.parse_recipe.shutil.which", return_value="/usr/bin/pandoc"), \
+             patch("processing.parse_recipe.subprocess.run", return_value=completed):
+            with pytest.raises(ValueError, match="no text"):
+                convert_with_pandoc(doc)
+
+
+# ---------------------------------------------------------------------------
+# load_recipe_source — pandoc routing
+# ---------------------------------------------------------------------------
+
+class TestLoadRecipeSourcePandoc:
+    def test_docx_routed_through_pandoc(self, tmp_path):
+        doc = tmp_path / "recipe.docx"
+        doc.write_bytes(b"fake")
+        with patch("processing.parse_recipe.convert_with_pandoc", return_value="converted text") as mock_conv:
+            loaded = load_recipe_source(str(doc))
+        mock_conv.assert_called_once()
+        assert loaded == {"images": [], "text": "converted text"}
+
+    def test_txt_not_routed_through_pandoc(self, tmp_path):
+        f = tmp_path / "recipe.txt"
+        f.write_text("plain recipe text")
+        with patch("processing.parse_recipe.convert_with_pandoc") as mock_conv:
+            loaded = load_recipe_source(str(f))
+        mock_conv.assert_not_called()
+        assert loaded["text"] == "plain recipe text"

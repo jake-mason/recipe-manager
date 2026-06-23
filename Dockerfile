@@ -4,11 +4,12 @@ WORKDIR /app
 
 ARG USE_ANTHROPIC=false
 
-# System deps for PyMuPDF / image handling
+# System deps for PyMuPDF / image handling; pandoc for document conversion
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     curl \
+    pandoc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -19,6 +20,6 @@ RUN if [ "$USE_ANTHROPIC" = "true" ]; then \
         pip install --no-cache-dir -r requirements.txt; \
     fi
 
-COPY parse_recipe.py .
+COPY processing/ ./processing/
 
-ENTRYPOINT ["python", "parse_recipe.py"]
+ENTRYPOINT ["python", "processing/parse_recipe.py"]

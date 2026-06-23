@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from import_groceries import (
+from groceries.import_groceries import (
+    IngredientItem,
     _applescript_escape,
     add_to_reminders,
     parse_ingredients_json,
@@ -30,14 +31,14 @@ class TestParseIngredientsJson:
             {"name": "Garlic", "quantity": "3 cloves", "prep_note": "", "section": "", "optional": False},
         ])
         items = parse_ingredients_json(path)
-        assert items == ["Chicken breast (1 lb)", "Garlic (3 cloves)"]
+        assert [i.name for i in items] == ["Chicken breast (1 lb)", "Garlic (3 cloves)"]
 
     def test_omits_quantity_when_empty(self, tmp_path):
         path = self._write(tmp_path, [
             {"name": "Salt", "quantity": "", "prep_note": "to taste", "section": "", "optional": False},
         ])
         items = parse_ingredients_json(path)
-        assert items == ["Salt"]
+        assert [i.name for i in items] == ["Salt"]
 
     def test_skips_optional_by_default(self, tmp_path):
         path = self._write(tmp_path, [
@@ -45,14 +46,14 @@ class TestParseIngredientsJson:
             {"name": "Garlic", "quantity": "2 cloves", "prep_note": "", "section": "", "optional": False},
         ])
         items = parse_ingredients_json(path)
-        assert items == ["Garlic (2 cloves)"]
+        assert [i.name for i in items] == ["Garlic (2 cloves)"]
 
     def test_includes_optional_when_flag_set(self, tmp_path):
         path = self._write(tmp_path, [
             {"name": "Parsley", "quantity": "1 tbsp", "prep_note": "", "section": "", "optional": True},
         ])
         items = parse_ingredients_json(path, include_optional=True)
-        assert items == ["Parsley (1 tbsp)"]
+        assert [i.name for i in items] == ["Parsley (1 tbsp)"]
 
     def test_skips_empty_name(self, tmp_path):
         path = self._write(tmp_path, [
@@ -60,18 +61,18 @@ class TestParseIngredientsJson:
             {"name": "Flour", "quantity": "2 cups", "prep_note": "", "section": "", "optional": False},
         ])
         items = parse_ingredients_json(path)
-        assert items == ["Flour (2 cups)"]
+        assert [i.name for i in items] == ["Flour (2 cups)"]
 
     def test_empty_list(self, tmp_path):
         path = self._write(tmp_path, [])
         assert parse_ingredients_json(path) == []
 
     def test_fixture(self, ingredients_json_path):
-        items = parse_ingredients_json(ingredients_json_path)
-        assert "Chicken breast (1 lb)" in items
-        assert "Garlic (3 cloves)" in items
-        assert "Heavy cream (1 cup)" in items
-        assert "Sun-dried tomatoes (1/2 cup)" in items
+        names = [i.name for i in parse_ingredients_json(ingredients_json_path)]
+        assert "Chicken breast (1 lb)" in names
+        assert "Garlic (3 cloves)" in names
+        assert "Heavy cream (1 cup)" in names
+        assert "Sun-dried tomatoes (1/2 cup)" in names
 
 
 # ---------------------------------------------------------------------------
@@ -132,11 +133,17 @@ class TestResolveIngredientsFile:
 
 class TestAddToRemindersDryRun:
     def test_dry_run_returns_zero(self, capsys):
-        count = add_to_reminders(["Egg (2)", "Butter (1 tbsp)"], dry_run=True)
+        count = add_to_reminders(
+            [IngredientItem(name="Egg (2)"), IngredientItem(name="Butter (1 tbsp)")],
+            dry_run=True,
+        )
         assert count == 0
 
     def test_dry_run_prints_items(self, capsys):
-        add_to_reminders(["Egg (2)", "Milk (1 cup)"], dry_run=True)
+        add_to_reminders(
+            [IngredientItem(name="Egg (2)"), IngredientItem(name="Milk (1 cup)")],
+            dry_run=True,
+        )
         captured = capsys.readouterr()
         assert "Egg (2)" in captured.out
         assert "Milk (1 cup)" in captured.out
@@ -146,6 +153,6 @@ class TestAddToRemindersDryRun:
         assert count == 0
 
     def test_dry_run_never_calls_osascript(self):
-        with patch("import_groceries._run_osascript") as mock_osa:
-            add_to_reminders(["Egg (2)"], dry_run=True)
+        with patch("groceries.import_groceries._run_osascript") as mock_osa:
+            add_to_reminders([IngredientItem(name="Egg (2)")], dry_run=True)
             mock_osa.assert_not_called()

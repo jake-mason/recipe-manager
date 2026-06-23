@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pick_recipe import find_recipes, pick_with_fzf
+from groceries.pick_recipe import find_recipes, pick_with_fzf
 
 
 # ---------------------------------------------------------------------------
@@ -58,17 +58,17 @@ class TestPickWithFzf:
         return result
 
     def test_returns_selection_on_success(self):
-        with patch("pick_recipe.subprocess.run", return_value=self._mock_run(0, "tuscan-chicken\n")):
+        with patch("groceries.pick_recipe.subprocess.run", return_value=self._mock_run(0, "tuscan-chicken\n")):
             assert pick_with_fzf(["tuscan-chicken", "apple-pie"]) == "tuscan-chicken"
 
     def test_returns_none_on_cancel(self):
-        with patch("pick_recipe.subprocess.run", return_value=self._mock_run(1, "")):
+        with patch("groceries.pick_recipe.subprocess.run", return_value=self._mock_run(1, "")):
             assert pick_with_fzf(["tuscan-chicken"]) is None
 
     def test_returns_none_on_empty_stdout(self):
-        with patch("pick_recipe.subprocess.run", return_value=self._mock_run(0, "  ")):
+        with patch("groceries.pick_recipe.subprocess.run", return_value=self._mock_run(0, "  ")):
             assert pick_with_fzf(["tuscan-chicken"]) is None
 
     def test_returns_sentinel_when_fzf_missing(self):
-        with patch("pick_recipe.subprocess.run", side_effect=FileNotFoundError):
+        with patch("groceries.pick_recipe.subprocess.run", side_effect=FileNotFoundError):
             assert pick_with_fzf(["any-recipe"]) == "FZF_NOT_FOUND"
