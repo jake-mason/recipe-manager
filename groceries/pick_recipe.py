@@ -96,11 +96,6 @@ def main() -> int:
         help="Reminders list name (default: Groceries)",
     )
     parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="Skip items already present in the Reminders list.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print ingredients without adding to Reminders.",
@@ -141,9 +136,7 @@ def main() -> int:
         add_to_reminders(
             items,
             list_name=args.list,
-            skip_existing=args.skip_existing,
             dry_run=args.dry_run,
-            note=f"from {slug}",
         )
         return 0
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:

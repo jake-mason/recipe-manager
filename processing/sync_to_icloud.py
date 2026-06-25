@@ -55,7 +55,6 @@ def sync_recipe(
     icloud_dir: Path,
     *,
     dry_run: bool = False,
-    skip_existing: bool = False,
 ) -> bool:
     """Copy one recipe's files into <icloud_dir>/<slug>/. Returns True if synced."""
     source_dir = formatted_dir / slug
@@ -64,10 +63,6 @@ def sync_recipe(
 
     dest_dir = icloud_dir / slug
     logging.debug("Syncing '%s': %s → %s", slug, source_dir, dest_dir)
-    if skip_existing and dest_dir.exists():
-        logging.info("Skipping '%s' — already present in iCloud folder.", slug)
-        return False
-
     files = [source_dir / name for name in SYNCED_FILES if (source_dir / name).exists()]
     if not files:
         raise FileNotFoundError(
@@ -113,11 +108,6 @@ def main() -> int:
         type=Path,
         default=default_data_dir,
         help=f"Base data directory (default: {default_data_dir})",
-    )
-    parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="Skip recipes already present in the iCloud folder.",
     )
     parser.add_argument(
         "--dry-run",
@@ -176,7 +166,6 @@ def main() -> int:
                 formatted_dir,
                 icloud_dir,
                 dry_run=args.dry_run,
-                skip_existing=args.skip_existing,
             ):
                 synced += 1
         except (FileNotFoundError, OSError) as exc:

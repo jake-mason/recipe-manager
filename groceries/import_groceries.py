@@ -7,7 +7,7 @@ import logging
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Set
 
@@ -15,19 +15,21 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 DEFAULT_LIST_NAME = "Groceries"
 
+# osascript blocks on the first-run macOS Automation permission dialog. Cap the
+# wait so a missed/unanswered prompt fails fast with guidance instead of hanging.
+OSASCRIPT_TIMEOUT_SECONDS = 60
+
 
 @dataclass
 class IngredientItem:
     name: str
-    tag_names: list[str] = field(default_factory=list)
-    note: Optional[str] = None
+    recipe_name: str = ""
+    section: str = ""
 
 
-def _to_tag_name(s: str) -> str:
-    """Sanitize a string into a valid Reminders tag name (lowercase, hyphens only)."""
-    s = s.lower().strip()
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    return s.strip("-")
+def _simplify_section(section: str) -> str:
+    """Strip common lead-in phrases from section names ('For the Grits' → 'Grits')."""
+    return re.sub(r"(?i)^(for\s+the\s+|for\s+|the\s+)", "", section).strip()
 
 
 def parse_ingredients_json(
@@ -35,13 +37,21 @@ def parse_ingredients_json(
     include_optional: bool = False,
     recipe_name: Optional[str] = None,
 ) -> list[IngredientItem]:
-    """Load ingredients.json and return structured IngredientItems with Reminders tags."""
+    """Load ingredients.json and return structured IngredientItems."""
     if recipe_name is None:
         recipe_name = path.parent.name
-    recipe_tag = _to_tag_name(recipe_name)
+    # Convert slug to human-readable name (e.g. "shrimp-and-grits" → "Shrimp and Grits")
+    _lowercase_words = {"a", "an", "and", "as", "at", "but", "by", "for", "in",
+                        "nor", "of", "on", "or", "so", "the", "to", "up", "yet"}
+    words = recipe_name.replace("-", " ").split()
+    display_recipe_name = " ".join(
+        w if (i > 0 and w in _lowercase_words) else w.capitalize()
+        for i, w in enumerate(words)
+    )
 
     data = json.loads(path.read_text(encoding="utf-8"))
     items = []
+    seen: Set[tuple] = set()
     for item in data:
         if item.get("optional") and not include_optional:
             continue
@@ -49,12 +59,13 @@ def parse_ingredients_json(
         if not name:
             continue
         quantity = item.get("quantity", "").strip()
-        section = item.get("section", "").strip()
+        section = _simplify_section(item.get("section", "").strip())
         display_name = f"{name} ({quantity})" if quantity else name
-        tags = [recipe_tag]
-        if section:
-            tags.append(_to_tag_name(section))
-        items.append(IngredientItem(name=display_name, tag_names=tags))
+        key = (name.casefold(), quantity.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(IngredientItem(name=display_name, recipe_name=display_recipe_name, section=section))
     return items
 
 
@@ -99,11 +110,20 @@ def _require_macos() -> None:
 
 def _run_osascript(script: str) -> str:
     logging.debug("Running osascript:\n%s", script)
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"osascript timed out after {OSASCRIPT_TIMEOUT_SECONDS}s. This usually means "
+            "the macOS Automation permission prompt is waiting for a response — look for "
+            "the dialog (it can hide behind your editor) and click Allow, or grant access "
+            "under System Settings → Privacy & Security → Automation, then re-run."
+        )
     if result.returncode != 0:
         stderr = result.stderr.strip() or "osascript failed"
         logging.debug("osascript exited %d: %s", result.returncode, stderr)
@@ -141,14 +161,12 @@ def get_existing_reminder_names(list_name: str) -> Set[str]:
     return {name.casefold() for name in names}
 
 
-def _make_reminder_statement(item: IngredientItem, note: Optional[str]) -> str:
+def _make_reminder_statement(item: IngredientItem) -> str:
     name_esc = _applescript_escape(item.name)
-    parts = []
-    if item.tag_names:
-        parts.append(" ".join(f"#{t}" for t in item.tag_names))
-    if note or item.note:
-        parts.append(note or item.note)  # type: ignore[arg-type]
-    body = "\n".join(parts) if parts else None
+    note_parts = [item.recipe_name] if item.recipe_name else []
+    if item.section:
+        note_parts.append(item.section)
+    body = " | ".join(note_parts) or None
     props = [f'name:"{name_esc}"']
     if body:
         props.append(f'body:"{_applescript_escape(body)}"')
@@ -158,11 +176,12 @@ def _make_reminder_statement(item: IngredientItem, note: Optional[str]) -> str:
 def add_to_reminders(
     items: list[IngredientItem],
     list_name: str = DEFAULT_LIST_NAME,
-    skip_existing: bool = False,
     dry_run: bool = False,
-    note: Optional[str] = None,
 ) -> int:
-    """Add items to a Reminders list. Returns the number of reminders created."""
+    """Add items to a Reminders list, skipping any that already exist.
+
+    Returns the number of reminders created.
+    """
     if not items:
         logging.warning("No ingredients to import.")
         return 0
@@ -170,26 +189,28 @@ def add_to_reminders(
     if dry_run:
         logging.info("Dry run — would add %d item(s) to '%s':", len(items), list_name)
         for item in items:
-            tag_str = "  " + " ".join(f"#{t}" for t in item.tag_names) if item.tag_names else ""
-            print(f"{item.name}{tag_str}")
+            note_parts = [item.recipe_name] if item.recipe_name else []
+            if item.section:
+                note_parts.append(item.section)
+            note_str = f"  ({' | '.join(note_parts)})" if note_parts else ""
+            print(f"{item.name}{note_str}")
         return 0
 
     _require_macos()
     _verify_list_exists(list_name)
+    logging.info("Machine setup looks fine")
 
-    to_add = items
-    if skip_existing:
-        existing = get_existing_reminder_names(list_name)
-        to_add = [item for item in items if item.name.casefold() not in existing]
-        skipped = len(items) - len(to_add)
-        if skipped:
-            logging.info("Skipping %d existing item(s).", skipped)
-        if not to_add:
-            logging.info("All items already exist in '%s'.", list_name)
-            return 0
+    existing = get_existing_reminder_names(list_name)
+    to_add = [item for item in items if item.name.casefold() not in existing]
+    skipped = len(items) - len(to_add)
+    if skipped:
+        logging.info("Skipping %d existing item(s).", skipped)
+    if not to_add:
+        logging.info("All items already exist in '%s'.", list_name)
+        return 0
 
     statements = "\n            ".join(
-        _make_reminder_statement(item, note) for item in to_add
+        _make_reminder_statement(item) for item in to_add
     )
     script = f"""
     tell application "Reminders"
@@ -233,18 +254,9 @@ def main() -> int:
         help=f"Reminders list name (default: {DEFAULT_LIST_NAME})",
     )
     parser.add_argument(
-        "--note",
-        help="Optional reminder body text applied to all imported items.",
-    )
-    parser.add_argument(
         "--include-optional",
         action="store_true",
         help="Include ingredients marked optional (skipped by default).",
-    )
-    parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="Skip items whose names already exist in the list (case-insensitive).",
     )
     parser.add_argument(
         "--dry-run",
@@ -281,9 +293,7 @@ def main() -> int:
         add_to_reminders(
             items,
             list_name=args.list,
-            skip_existing=args.skip_existing,
             dry_run=args.dry_run,
-            note=args.note,
         )
         return 0
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:

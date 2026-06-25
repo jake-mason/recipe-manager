@@ -34,6 +34,8 @@ from dotenv import load_dotenv
 # resolving sibling packages like `groceries` via absolute imports.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from processing import cache
+
 load_dotenv()
 
 
@@ -379,14 +381,63 @@ def parse_with_llm(
     """Extract recipe fields from images and/or page text.
 
     Dispatches to the Anthropic API when USE_ANTHROPIC=true, otherwise uses Ollama.
+    Results are cached on disk keyed by a hash of the input, so identical inputs
+    skip the (often paid) LLM call entirely.
     """
     if not images and not text:
         logging.error("No images or text to process.")
         return None, [], ""
 
-    if _use_anthropic():
-        return parse_with_claude(images=images, text=text)
+    use_anthropic = _use_anthropic()
+    backend = "anthropic" if use_anthropic else "ollama"
+    if use_anthropic:
+        model_id = model_name or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    else:
+        text_model = os.environ.get("OLLAMA_TEXT_MODEL")
+        vision_model = model_name or os.environ.get("OLLAMA_MODEL", "qwen2.5vl:3b")
+        model_id = vision_model if images else (text_model or vision_model)
 
+    prompt = _IMAGE_PROMPT if images else _TEXT_PROMPT
+    cache_key = cache.compute_key(
+        images=images,
+        text=text,
+        backend=backend,
+        model_id=model_id,
+        prompt=prompt,
+        schema=json.dumps(RecipeStructure.model_json_schema(), sort_keys=True),
+    )
+
+    cached = cache.load(cache_key)
+    if cached is not None:
+        slug, ingredient_dicts, steps = cached
+        ingredients = [Ingredient(**i) for i in ingredient_dicts]
+        logging.info(
+            "Cache hit (%s): reusing %d ingredient(s) for slug=%s; skipping LLM call.",
+            cache_key[:12], len(ingredients), slug,
+        )
+        return slug, ingredients, steps
+
+    if use_anthropic:
+        result = parse_with_claude(images=images, text=text, model_name=model_id)
+    else:
+        result = _parse_with_ollama(images=images, text=text, model_id=model_id)
+
+    slug, ingredients, steps = result
+    if slug and (ingredients or steps):
+        cache.store(
+            cache_key,
+            slug,
+            [i.model_dump() for i in ingredients],
+            steps,
+        )
+    return result
+
+
+def _parse_with_ollama(
+    images: Optional[List[bytes]],
+    text: Optional[str],
+    model_id: str,
+) -> Tuple[Optional[str], List[Ingredient], str]:
     if images:
         message: Dict[str, Any] = {"role": "user", "content": _IMAGE_PROMPT, "images": images}
         log_label = "document images"
@@ -396,13 +447,9 @@ def parse_with_llm(
 
     try:
         client = _ollama_client()
-        text_model = os.environ.get("OLLAMA_TEXT_MODEL")
-        vision_model = model_name or os.environ.get("OLLAMA_MODEL", "qwen2.5vl:3b")
-        actual_model = vision_model if images else (text_model or vision_model)
-
-        logging.info("Sending %s to Ollama for extraction (%s)...", log_label, actual_model)
+        logging.info("Sending %s to Ollama for extraction (%s)...", log_label, model_id)
         response = client.chat(
-            model=actual_model,
+            model=model_id,
             messages=[message],
             format=RecipeStructure.model_json_schema(),
             options={"temperature": 0.1},
@@ -589,8 +636,11 @@ def main():
     default_model = os.environ.get("OLLAMA_MODEL", "qwen2.5vl:3b")
     parser.add_argument(
         "--model",
-        default=default_model,
-        help=f"The Ollama model to use for vision extraction (default: {default_model})",
+        default=None,
+        help=(
+            "Override the extraction model. If unset, defaults to OLLAMA_MODEL "
+            f"({default_model}) for Ollama, or ANTHROPIC_MODEL for the Anthropic backend."
+        ),
     )
     parser.add_argument(
         "--use-anthropic",

@@ -31,12 +31,12 @@ python3 processing/sync_to_icloud.py --all --dry-run
 python3 processing/sync_to_icloud.py <slug> --icloud-dir "~/Library/Mobile Documents/com~apple~CloudDocs/Recipes"
 
 # Interactive recipe search + import to Reminders (uses fzf if installed, else text fallback)
-python3 groceries/pick_recipe.py [--dry-run] [--skip-existing] [--list <name>]
+python3 groceries/pick_recipe.py [--dry-run] [--list <name>]
 
 # Import ingredients into Reminders only (macOS host, no Docker)
 python3 groceries/import_groceries.py <recipe-slug>
 python3 groceries/import_groceries.py --file data/recipes-formatted/<slug>/ingredients.md
-python3 groceries/import_groceries.py <slug> --dry-run --skip-existing
+python3 groceries/import_groceries.py <slug> --dry-run
 
 # Docker maintenance
 docker compose down          # stop background services

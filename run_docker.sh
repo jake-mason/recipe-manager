@@ -34,7 +34,7 @@ RECIPE_NAME=${POSITIONAL[1]:-""}
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "$INPUT_SOURCE" =~ ^https?:// ]]; then
-    PARSER_COMMAND=("processing/parse_recipe.py" "$INPUT_SOURCE")
+    PARSER_COMMAND=("python3" "processing/parse_recipe.py" "$INPUT_SOURCE")
     # Compose still expects a volume mount; URL fetching happens inside the container.
     export INPUT_DIR="${PROJECT_DIR}/data"
     export FILENAME="."
@@ -46,7 +46,7 @@ else
     fi
     export INPUT_DIR=$(dirname "$INPUT_PATH")
     export FILENAME=$(basename "$INPUT_PATH")
-    PARSER_COMMAND=("processing/parse_recipe.py" "/input/${FILENAME}")
+    PARSER_COMMAND=("python3" "processing/parse_recipe.py" "/input/${FILENAME}")
 fi
 
 export OUTPUT_DIR="${PROJECT_DIR}/data"
@@ -101,7 +101,8 @@ if { [ "$IMPORT_GROCERIES" = true ] || [ "$SYNC_ICLOUD" = true ]; } && [ -z "$RE
 fi
 
 if [ "$IMPORT_GROCERIES" = true ]; then
-    echo "Importing ingredients to Reminders..."
+    echo "Importing ingredients to Reminders on this Mac (not in Docker)..."
+    echo "  (First time only: macOS may show an Automation permission prompt — click Allow if it appears.)"
     if [ -z "$RESOLVED_SLUG" ]; then
         echo "Error: could not determine recipe slug for grocery import. Pass a recipe name or run import manually."
         exit 1

@@ -17,6 +17,20 @@ The repo is split into two sections:
 
 Parsing runs in Docker. Reminders import and iCloud sync run on the **Mac host** only (AppleScript and iCloud Drive aren't available inside a container).
 
+### How the full pipeline runs
+
+`./run_docker.sh <file> <slug> --groceries --sync` executes three stages **in order**, and only the first runs in a container:
+
+| # | Stage | Where it runs | Script |
+|---|-------|---------------|--------|
+| 1 | **Parse** the recipe into `ingredients.json` + `steps.md` | Docker container (exits when done) | `processing/parse_recipe.py` |
+| 2 | **Import** ingredients into the **Groceries** Reminders list (`--groceries`) | Mac host, after the container exits | `groceries/import_groceries.py` |
+| 3 | **Sync** the output to your shared iCloud folder (`--sync`) | Mac host, after the container exits | `processing/sync_to_icloud.py` |
+
+Reminders is **never** driven from inside Docker — `run_docker.sh` invokes `import_groceries.py` on the host after parsing finishes. Run the script as `./run_docker.sh …` (it's `#!/bin/bash` and uses bash arrays — don't invoke it with `sh`).
+
+> **First-run note:** stage 2 calls `osascript`, which triggers a one-time macOS **Automation** permission prompt. If the run seems to hang right after parsing, look for that dialog (it can appear behind your editor) and click **Allow**. See [macOS Reminders setup](#macos-reminders-setup).
+
 ## Prerequisites
 
 - **Docker** and **Docker Compose**
@@ -92,7 +106,7 @@ recipe-manager/
 │   ├── import_groceries.py      # macOS Reminders import (host only)
 │   └── pick_recipe.py           # Interactive recipe search + grocery import
 ├── run_docker.sh            # Recommended entry point (Docker + optional --groceries / --sync)
-├── docker-compose.yml       # Ollama + generic Python execution service
+├── docker-compose.yml       # Ollama + recipe parser service
 ├── Dockerfile
 ├── data/
 │   ├── recipes-unformatted/ # Source files (PDF, images, .txt, .md, .docx, etc.)
@@ -143,24 +157,23 @@ make docker-cleanup
 
 #### Running other scripts in the container
 
-The image is a generic Python execution platform: its entrypoint is the `python`
-interpreter, and the default command parses a single recipe. To run any other
-script bundled in the image (both `processing/` and `groceries/` are copied in),
-pass its path as the command:
+The image's entrypoint is `bash`. Both `processing/` and `groceries/` are copied
+in, so you can run any bundled script with `bash -c "python3 …"`, or drop into a
+shell and work interactively. Running the service with no command opens a shell.
 
 ```bash
+# Drop into an interactive shell (bash is the entrypoint)
+docker compose run --rm recipe-manager-app
+
+# Parse a single recipe
+docker compose run --rm recipe-manager-app -c "python3 processing/parse_recipe.py /input/recipe.pdf --name my-slug"
+
 # Batch-parse everything in data/recipes-unformatted/
-docker compose run --rm recipe-manager-app processing/batch_parse_recipes.py --dry-run
+docker compose run --rm recipe-manager-app -c "python3 processing/batch_parse_recipes.py --dry-run"
 
 # Run an arbitrary module or one-off snippet
-docker compose run --rm recipe-manager-app -m processing.parse_recipe --help
-docker compose run --rm recipe-manager-app -c "import sys; print(sys.version)"
-
-# Drop into an interactive Python REPL (override the default command)
-docker compose run --rm recipe-manager-app -i
-
-# Or override the entrypoint entirely for a shell
-docker compose run --rm --entrypoint bash recipe-manager-app
+docker compose run --rm recipe-manager-app -c "python3 -m processing.parse_recipe --help"
+docker compose run --rm recipe-manager-app -c "python3 -c 'import sys; print(sys.version)'"
 ```
 
 Note that `groceries/import_groceries.py` and `processing/sync_to_icloud.py` rely
@@ -209,7 +222,6 @@ If [fzf](https://github.com/junegunn/fzf) is installed, you get a live-filter se
 
 ```bash
 python3 groceries/pick_recipe.py --dry-run        # preview ingredients without touching Reminders
-python3 groceries/pick_recipe.py --skip-existing  # skip items already in the list
 python3 groceries/pick_recipe.py --list "Shopping List"  # use a different Reminders list
 ```
 
@@ -229,7 +241,6 @@ python3 groceries/import_groceries.py --file data/recipes-formatted/tuscan-chick
 | Flag | Description |
 |------|-------------|
 | `--dry-run` | Print ingredient lines without touching Reminders |
-| `--skip-existing` | Skip items whose titles already exist in the list (case-insensitive) |
 | `--note` | Set the reminder body (default for slug import: `from <slug>`) |
 | `--list` | Reminders list name (default: `Groceries`) |
 | `--data-dir` | Base `data/` directory for slug lookup |
@@ -255,7 +266,6 @@ python3 processing/sync_to_icloud.py tuscan-chicken --icloud-dir "~/Library/Mobi
 
 # Sync the whole library; preview first
 python3 processing/sync_to_icloud.py --all --dry-run
-python3 processing/sync_to_icloud.py --all --skip-existing
 ```
 
 Or do it automatically right after parsing with `--sync` (see Modes 1 and 2):
@@ -268,7 +278,6 @@ Or do it automatically right after parsing with `--sync` (see Modes 1 and 2):
 |------|-------------|
 | `slug` / `--all` | A single recipe slug, or `--all` for every parsed recipe |
 | `--icloud-dir` | Destination folder (overrides `RECIPE_ICLOUD_DIR`) |
-| `--skip-existing` | Skip recipes already present in the iCloud folder |
 | `--dry-run` | Show what would be copied without writing |
 | `--data-dir` | Base `data/` directory for source lookup |
 
@@ -328,12 +337,6 @@ Items created on the Mac should appear on iPhone in **Reminders → Groceries** 
 python3 groceries/pick_recipe.py
 ```
 
-**Re-import without duplicates:**
-
-```bash
-python3 groceries/import_groceries.py my-recipe --skip-existing
-```
-
 **Parse everything in the unformatted folder:**
 
 ```bash
@@ -348,6 +351,7 @@ python3 processing/batch_parse_recipes.py
 | Parser cannot reach Ollama | In Docker, `OLLAMA_HOST` must be `http://ollama:11434`, not `localhost` |
 | Empty or bad extraction | Try a clearer scan or the print URL; use `--name` for a stable folder; try a different `--model` or set `OLLAMA_TEXT_MODEL` for HTML/text |
 | URL fetch fails or 403 | Site may block bots; try saving as PDF and parsing the file instead |
+| Command seems to hang right after parsing | Stage 2 (grocery import) is waiting on the macOS **Automation** permission dialog — look for it (it can hide behind your editor) and click **Allow**. It runs on the host, not in Docker. |
 | Grocery import finds wrong recipe | Pass the slug explicitly; use `--file` pointing at the right `ingredients.json` |
 | `--groceries` cannot resolve slug | Always pass `recipe_name` as the second argument to `run_docker.sh` |
 | `groceries/pick_recipe.py` shows no recipes | Parse some recipes first — they must exist under `data/recipes-formatted/` |
